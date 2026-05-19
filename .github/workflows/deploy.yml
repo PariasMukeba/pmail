@@ -1,0 +1,57 @@
+name: Deploy
+
+# Triggers only on pushes to main — which in practice means merged PRs,
+# since main has branch protection (direct pushes are blocked).
+#
+# CI must pass before a merge is allowed (branch protection rule:
+# "Require status checks to pass before merging" → select quality,
+# unit-tests, ai-tests, e2e, security-scan). This workflow does NOT
+# re-run the test suite; it trusts the CI gate already enforced that.
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    name: Deploy to Vercel (Production)
+    runs-on: ubuntu-latest
+
+    # Deployment environment gates (optional): if you configure a
+    # "production" environment in GitHub → Settings → Environments,
+    # required reviewers can be added here for a manual approval step.
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.preview-url }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Vercel CLI handles the build internally — we don't need to run
+      # `npm run build` here. The action uploads source + config to Vercel
+      # and lets Vercel's build infrastructure handle compilation, which
+      # gives us better cache hits and build logs in the Vercel dashboard.
+      - name: Deploy to Vercel (production)
+        id: deploy
+        uses: amondnet/vercel-action@v25
+        with:
+          vercel-token: ${{ secrets.VERCEL_TOKEN }}
+          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+          # --prod promotes the deployment to the production alias.
+          # Without this flag, Vercel creates a preview URL only.
+          vercel-args: '--prod'
+
+      - name: Post deployment URL to summary
+        run: echo "### 🚀 Deployed to production" >> $GITHUB_STEP_SUMMARY
+          && echo "${{ steps.deploy.outputs.preview-url }}" >> $GITHUB_STEP_SUMMARY
+
+  # ── Preview deployments for PRs ─────────────────────────────────────────────
+  # A separate job that runs on pull_request events (defined below the push
+  # trigger) creates a Vercel preview URL for every PR. This is configured
+  # in the Vercel project settings (Automatic Deployments → Git Integration)
+  # rather than in this file — Vercel handles PR previews natively once the
+  # GitHub integration is enabled.
+  #
+  # To enable: Vercel Dashboard → Project → Settings → Git → Connect GitHub repo
+  # Vercel will automatically comment the preview URL on every PR.

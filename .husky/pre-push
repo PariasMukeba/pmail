@@ -1,0 +1,17 @@
+#!/bin/sh
+# Pre-push hook — runs on every `git push`
+# Blocks the push if tests fail or coverage drops below 80%.
+
+set -e
+
+echo "[pre-push] Running unit and integration tests..."
+npm test
+
+echo "[pre-push] Checking coverage threshold (>= 80%)..."
+npm run test:coverage
+
+# Coverage threshold is enforced by Vitest's coverageThreshold config in
+# vitest.config.ts. If coverage drops below 80%, `test:coverage` exits non-zero
+# and this hook blocks the push automatically.
+
+echo "[pre-push] All checks passed."

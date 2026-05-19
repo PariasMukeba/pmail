@@ -1,0 +1,61 @@
+# CODEOWNERS — automatic review assignment
+#
+# GitHub assigns reviewers from this file when a PR touches the listed paths.
+# Rules are evaluated last-to-first; the last matching pattern wins.
+# Documentation: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+#
+# Replace @aire/* team slugs with actual GitHub usernames or org team names
+# (e.g. @your-org/ai-team) once the repository is set up.
+
+# ── Global fallback ──────────────────────────────────────────────────────────
+# Every file requires at least one review from the core team.
+*                               @aire/core
+
+# ── AI module ────────────────────────────────────────────────────────────────
+# lib/ai/email-ai.ts is the single allowed entry point for all Claude calls.
+# Any change here affects billing, latency, and output quality across the
+# whole product. Requires AI-specialist review.
+lib/ai/                         @aire/ai-team
+lib/skills/ai/                  @aire/ai-team
+tests/ai/                       @aire/ai-team
+specs/features/*ai*             @aire/ai-team
+specs/features/*prompt*         @aire/ai-team
+
+# ── Security-critical code ───────────────────────────────────────────────────
+# Encryption, OAuth, and token handling require a security-focused reviewer.
+# Mistakes here expose user credentials or plaintext email content.
+lib/skills/crypto/              @aire/security-team
+lib/sync/                       @aire/security-team
+app/api/auth/                   @aire/security-team
+
+# ── Database schema ───────────────────────────────────────────────────────────
+# Prisma migrations are irreversible in production. Requires a reviewer who
+# understands zero-downtime migration patterns.
+prisma/                         @aire/data-team
+
+# ── CI/CD and infrastructure ──────────────────────────────────────────────────
+# Workflow changes can break the entire deployment pipeline or accidentally
+# expose secrets. Changes require explicit ops-team sign-off.
+.github/                        @aire/ops-team
+.husky/                         @aire/ops-team
+Dockerfile*                     @aire/ops-team
+docker-compose*                 @aire/ops-team
+
+# ── Feature specs ────────────────────────────────────────────────────────────
+# Specs define what gets built. Product owner reviews all spec changes to
+# ensure alignment with the roadmap before implementation begins.
+specs/                          @aire/product
+
+# ── Test infrastructure ───────────────────────────────────────────────────────
+# Shared test fixtures, mocks, and setup files — changes affect every test
+# in the suite. Core team review required.
+tests/setup.ts                  @aire/core
+tests/mocks/                    @aire/core
+tests/fixtures/                 @aire/core
+vitest.config.ts                @aire/core
+playwright.config.ts            @aire/core
+
+# ── CLAUDE.md ────────────────────────────────────────────────────────────────
+# The project's non-negotiables. Any change to this file requires all team
+# leads to sign off — it's effectively the constitution of the codebase.
+CLAUDE.md                       @aire/core @aire/security-team @aire/ai-team

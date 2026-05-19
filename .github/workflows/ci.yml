@@ -1,0 +1,204 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+# Cancel any in-flight run for the same branch/PR when a new push arrives.
+# Prevents queuing 5 runs if you push 5 commits in quick succession.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Job 1: Type Check + Lint ────────────────────────────────────────────────
+  # Runs first, independently. If types are broken, there's no point running
+  # tests — they'd fail with import errors, not test failures. Failing fast here
+  # saves 2–3 minutes of CI time on every broken-types push.
+  quality:
+    name: Type Check + Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # tsc --noEmit: compile the whole project and report type errors without
+      # emitting JS. Catches things Jest/Vitest never see (wrong prop types,
+      # missing generics, unsafe casts). Runs in <10s on this codebase.
+      - name: TypeScript strict check
+        run: npm run typecheck
+
+      # ESLint with --max-warnings 0: treat every warning as a failure.
+      # This enforces the rules in .eslintrc even when devs run with --fix locally.
+      # Next.js ships its own eslint config; we extend it in .eslintrc.json.
+      - name: ESLint (zero warnings allowed)
+        run: npx eslint . --max-warnings 0
+
+  # ── Job 2: Unit + Integration Tests ─────────────────────────────────────────
+  # `needs: quality` — only runs if types and lint pass. Tests that import
+  # broken modules would produce confusing error messages; we want clean failures.
+  #
+  # Runs with --coverage so we get a line/branch/function breakdown even if
+  # individual test assertions pass. Coverage is enforced by vitest.config.ts
+  # thresholds (80/80/75/80) — vitest exits 1 if any threshold is missed,
+  # which fails this job.
+  unit-tests:
+    name: Unit + Integration Tests
+    runs-on: ubuntu-latest
+    needs: quality
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Run tests with coverage
+        run: npm run test:coverage
+        env:
+          ENCRYPTION_SECRET: ci-test-secret-32-chars-exactly!!
+          ANTHROPIC_API_KEY: ci-placeholder-not-used
+          NEXTAUTH_SECRET: ci-test-secret
+
+      # Uploads the lcov.info produced by @vitest/coverage-v8 to Codecov.
+      # Codecov posts a coverage delta comment on every PR showing which lines
+      # were added without coverage. The codecov.yml in the repo root controls
+      # patch vs project coverage thresholds.
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage/lcov.info
+          fail_ci_if_error: false   # coverage upload failure shouldn't block merge
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  # ── Job 3: AI Behaviour Tests ────────────────────────────────────────────────
+  # Runs in parallel with unit-tests (both need: quality).
+  # AI tests are kept separate for two reasons:
+  #   1. They can be replaced with real API calls in the weekly regression job
+  #      (ai-prompt-regression.yml) without changing this file.
+  #   2. They may eventually have different timeouts or retry logic.
+  #
+  # In CI, all Anthropic calls are intercepted by MSW — no real API key needed.
+  # The ANTHROPIC_API_KEY here is a dummy; the SDK is never reached.
+  ai-tests:
+    name: AI Behaviour Tests
+    runs-on: ubuntu-latest
+    needs: quality
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Run AI behaviour tests (mocked API)
+        run: npm run test:ai
+        env:
+          ENCRYPTION_SECRET: ci-test-secret-32-chars-exactly!!
+          ANTHROPIC_API_KEY: ci-placeholder-not-used-msw-intercepts
+          NEXTAUTH_SECRET: ci-test-secret
+
+  # ── Job 4: E2E Tests ─────────────────────────────────────────────────────────
+  # Runs only after unit-tests AND ai-tests pass. E2E tests are the slowest
+  # (Playwright spins up a real browser), so we run them last and only when
+  # everything else is green. No point debugging E2E failures if the unit tests
+  # are already broken.
+  #
+  # `npm run build` is required because Playwright uses the production Next.js
+  # server via `webServer` in playwright.config.ts. The test server starts on
+  # port 3000 and is torn down at the end of the job.
+  e2e:
+    name: E2E Tests (Playwright)
+    runs-on: ubuntu-latest
+    needs: [unit-tests, ai-tests]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+
+      # --with-deps installs OS-level dependencies (libnss3, libgbm, etc.) that
+      # Chromium needs. Skipping this causes cryptic "browser not found" errors.
+      - name: Install Playwright + Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Build Next.js app
+        run: npm run build
+        env:
+          DATABASE_URL: file:./test.db
+          NEXTAUTH_SECRET: ci-test-secret
+          ANTHROPIC_API_KEY: ci-placeholder-not-used
+          ENCRYPTION_SECRET: ci-test-secret-32-chars-exactly!!
+          NEXTAUTH_URL: http://localhost:3000
+
+      - name: Run Playwright E2E tests
+        run: npm run test:e2e
+        env:
+          DATABASE_URL: file:./test.db
+          NEXTAUTH_SECRET: ci-test-secret
+          ANTHROPIC_API_KEY: ci-placeholder-not-used
+          ENCRYPTION_SECRET: ci-test-secret-32-chars-exactly!!
+          NEXTAUTH_URL: http://localhost:3000
+
+      # Playwright saves screenshots and traces for every failed test.
+      # This artifact is uploaded so you can download and inspect failures
+      # without re-running CI. Expires after 30 days.
+      - name: Upload Playwright report on failure
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 30
+
+  # ── Job 5: Security Scan ─────────────────────────────────────────────────────
+  # Runs in parallel with quality — no dependency needed since it reads files,
+  # not build output.
+  #
+  # Two checks:
+  #   npm audit: flags known CVEs in our dependency tree at "high" severity or
+  #   above. "moderate" and below are silenced to avoid noise from transitive
+  #   deps we can't control. Run `npm audit fix` to resolve flagged packages.
+  #
+  #   TruffleHog: scans the diff between base and HEAD for accidentally committed
+  #   secrets (API keys, tokens, passwords). It uses entropy analysis + regex
+  #   patterns. Runs on git history, not the filesystem, so a squash-merged
+  #   commit still gets scanned.
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # TruffleHog needs full history to compare base..HEAD
+
+      - name: Audit npm dependencies (high severity)
+        run: npm audit --audit-level=high
+
+      - name: Scan for committed secrets (TruffleHog)
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+          extra_args: --debug --only-verified

@@ -1,0 +1,27 @@
+#!/bin/sh
+# Commit-msg hook — validates the commit message format from CLAUDE.md.
+# $1 is the path to the file containing the commit message.
+
+COMMIT_MSG=$(cat "$1")
+
+# Strip comments (lines starting with #) and blank lines before checking.
+STRIPPED=$(echo "$COMMIT_MSG" | grep -v '^#' | grep -v '^$' | head -1)
+
+PATTERN="^(feat|fix|test|refactor|docs|chore): .+"
+
+if ! echo "$STRIPPED" | grep -qE "$PATTERN"; then
+  echo ""
+  echo "ERROR: Commit message does not follow the required format (CLAUDE.md)"
+  echo ""
+  echo "  Required: <type>: <description>"
+  echo "  Valid types: feat | fix | test | refactor | docs | chore"
+  echo ""
+  echo "  Examples:"
+  echo "    feat: add email snooze feature"
+  echo "    fix: null subject in thread grouping"
+  echo "    test: add integration tests for search API"
+  echo ""
+  echo "  Your message: $STRIPPED"
+  echo ""
+  exit 1
+fi

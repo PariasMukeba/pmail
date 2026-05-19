@@ -1,0 +1,96 @@
+name: AI Prompt Regression
+
+# Runs weekly to catch model-side degradation: same prompts, same test
+# assertions, but the REAL Anthropic API instead of MSW mocks.
+#
+# Why weekly instead of on every push?
+#   - Each run costs real API tokens (~$0.10–0.50 depending on model).
+#   - Model behaviour changes slowly (Claude versions update infrequently).
+#   - We want a baseline trend, not a per-commit noise metric.
+#
+# When this job fails it means one of two things:
+#   1. A prompt change broke the expected output format → fix the prompt.
+#   2. The model's default behaviour drifted → review and update tests/prompts.
+
+on:
+  schedule:
+    - cron: '0 9 * * 1'   # Every Monday at 09:00 UTC
+  workflow_dispatch:        # Manual trigger from the Actions tab
+    inputs:
+      verbose:
+        description: 'Run with verbose reporter'
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  prompt-regression:
+    name: Test AI Prompt Quality (Real API)
+    runs-on: ubuntu-latest
+    # Prevent accidental parallel runs if someone triggers manually while
+    # the scheduled run is still in progress.
+    concurrency:
+      group: ai-prompt-regression
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+
+      # USE_REAL_API=true signals the MSW setup (tests/setup.ts) to skip
+      # registering the Anthropic handler, letting real HTTP through.
+      # All other handlers (Gmail, Microsoft) remain mocked.
+      - name: Run AI tests against real Anthropic API
+        run: |
+          if [ "${{ inputs.verbose }}" = "true" ]; then
+            npx vitest run tests/ai/ --reporter=verbose
+          else
+            npx vitest run tests/ai/
+          fi
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ENCRYPTION_SECRET: ci-test-secret-32-chars-exactly!!
+          NEXTAUTH_SECRET: ci-test-secret
+          USE_REAL_API: 'true'
+        timeout-minutes: 10
+
+      # Save the full test output as an artifact for trend analysis.
+      # Compare weekly runs to spot gradual quality degradation.
+      - name: Save test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ai-regression-results-${{ github.run_id }}
+          path: |
+            test-results/
+            vitest-report.json
+          retention-days: 90
+
+      # Alert on failure. Only fires if the tests actually failed (not if
+      # the job was cancelled or skipped). Requires SLACK_WEBHOOK_URL secret.
+      - name: Notify Slack on regression
+        if: failure()
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "text": "⚠️ *Aire AI Prompt Regression Detected*",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "⚠️ *AI prompt regression detected in weekly test run*\n\nOne or more AI behaviour tests failed against the real Anthropic API.\nThis may indicate model drift or a broken prompt.\n\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View run details>"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

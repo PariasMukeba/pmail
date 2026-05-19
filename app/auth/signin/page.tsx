@@ -1,0 +1,238 @@
+"use client";
+
+import { useState } from "react";
+import { signIn } from "next-auth/react";
+import { Mail, ChevronDown, ChevronUp, Loader2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+
+interface ImapPreset {
+  name: string;
+  imapHost: string;
+  imapPort: number;
+  smtpHost: string;
+  smtpPort: number;
+}
+
+const IMAP_PRESETS: ImapPreset[] = [
+  { name: "Yahoo", imapHost: "imap.mail.yahoo.com", imapPort: 993, smtpHost: "smtp.mail.yahoo.com", smtpPort: 587 },
+  { name: "AOL", imapHost: "imap.aol.com", imapPort: 993, smtpHost: "smtp.aol.com", smtpPort: 587 },
+  { name: "iCloud", imapHost: "imap.mail.me.com", imapPort: 993, smtpHost: "smtp.mail.me.com", smtpPort: 587 },
+];
+
+export default function SignInPage() {
+  const [showImap, setShowImap] = useState(false);
+  const [isLoading, setIsLoading] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [imapForm, setImapForm] = useState({
+    email: "", password: "", imapHost: "", imapPort: "993",
+    smtpHost: "", smtpPort: "587", autoDetect: true,
+  });
+
+  const handleOAuth = async (provider: "google" | "microsoft-entra-id") => {
+    setIsLoading(provider);
+    setError(null);
+    await signIn(provider, { callbackUrl: "/inbox" });
+  };
+
+  const handleImap = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading("imap");
+    setError(null);
+    const result = await signIn("credentials", {
+      email: imapForm.email,
+      password: imapForm.password,
+      imapHost: imapForm.imapHost,
+      imapPort: imapForm.imapPort,
+      smtpHost: imapForm.smtpHost,
+      smtpPort: imapForm.smtpPort,
+      redirect: false,
+      callbackUrl: "/inbox",
+    });
+    setIsLoading(null);
+    if (result?.error) {
+      const host = imapForm.imapHost.toLowerCase();
+      const needsAppPassword =
+        host.includes("yahoo") || host.includes("icloud") ||
+        host.includes("aol") || host.includes("gmail");
+      setError(
+        needsAppPassword
+          ? "Connection failed. This provider requires an App Password — not your regular login password. Generate one in your account security settings."
+          : "Could not connect. Check your IMAP host, port, and credentials."
+      );
+    } else if (result?.url) {
+      window.location.href = result.url;
+    }
+  };
+
+  const applyPreset = (preset: ImapPreset) => {
+    setImapForm((f) => ({
+      ...f,
+      imapHost: preset.imapHost,
+      imapPort: String(preset.imapPort),
+      smtpHost: preset.smtpHost,
+      smtpPort: String(preset.smtpPort),
+      autoDetect: false,
+    }));
+  };
+
+  return (
+    <div className="min-h-screen bg-background flex items-center justify-center px-4">
+      <div className="w-full max-w-sm space-y-8">
+        {/* Branding */}
+        <div className="text-center space-y-3">
+          <div className="flex items-center justify-center gap-3">
+            <div className="w-12 h-12 rounded-xl bg-primary flex items-center justify-center shadow-lg shadow-primary/30">
+              <Mail className="w-6 h-6 text-primary-foreground" />
+            </div>
+          </div>
+          <h1 className="text-3xl font-bold text-foreground tracking-tight">Pmail</h1>
+          <p className="text-sm text-muted-foreground">Your AI-first email client</p>
+        </div>
+
+        {/* Error */}
+        {error && (
+          <div className="px-4 py-3 rounded-md bg-destructive/10 border border-destructive/30 text-sm text-destructive">
+            {error}
+          </div>
+        )}
+
+        {/* OAuth buttons */}
+        <div className="space-y-3">
+          <Button
+            variant="outline"
+            className="w-full gap-3 h-11"
+            onClick={() => handleOAuth("google")}
+            disabled={isLoading !== null}
+          >
+            {isLoading === "google" ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <svg className="w-4 h-4" viewBox="0 0 24 24">
+                <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+                <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+                <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
+                <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+              </svg>
+            )}
+            Continue with Google
+          </Button>
+
+          <Button
+            variant="outline"
+            className="w-full gap-3 h-11"
+            onClick={() => handleOAuth("microsoft-entra-id")}
+            disabled={isLoading !== null}
+          >
+            {isLoading === "microsoft-entra-id" ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <svg className="w-4 h-4" viewBox="0 0 23 23">
+                <path fill="#f3f3f3" d="M0 0h23v23H0z"/>
+                <path fill="#f35325" d="M1 1h10v10H1z"/>
+                <path fill="#81bc06" d="M12 1h10v10H12z"/>
+                <path fill="#05a6f0" d="M1 12h10v10H1z"/>
+                <path fill="#ffba08" d="M12 12h10v10H12z"/>
+              </svg>
+            )}
+            Continue with Microsoft
+          </Button>
+
+          {/* IMAP toggle */}
+          <button
+            onClick={() => setShowImap(!showImap)}
+            className="w-full flex items-center justify-center gap-2 h-11 border border-border rounded-md text-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
+          >
+            Add IMAP Account
+            {showImap ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+          </button>
+        </div>
+
+        {/* IMAP form */}
+        {showImap && (
+          <form onSubmit={handleImap} className="space-y-4 border border-border rounded-lg p-4 bg-card">
+            <div className="space-y-2">
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Quick add</p>
+              <div className="flex flex-wrap gap-2">
+                {IMAP_PRESETS.map((p) => (
+                  <button
+                    key={p.name}
+                    type="button"
+                    onClick={() => applyPreset(p)}
+                    className="px-3 py-1 text-xs rounded-md border border-border hover:bg-accent transition-colors"
+                  >
+                    {p.name}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setImapForm((f) => ({ ...f, autoDetect: false }))}
+                  className="px-3 py-1 text-xs rounded-md border border-border hover:bg-accent transition-colors"
+                >
+                  Custom
+                </button>
+              </div>
+            </div>
+
+            <Input
+              type="email"
+              placeholder="Email address"
+              value={imapForm.email}
+              onChange={(e) => setImapForm((f) => ({ ...f, email: e.target.value }))}
+              required
+            />
+            <Input
+              type="password"
+              placeholder="Password"
+              value={imapForm.password}
+              onChange={(e) => setImapForm((f) => ({ ...f, password: e.target.value }))}
+              required
+            />
+
+            {!imapForm.autoDetect && (
+              <div className="space-y-2">
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="col-span-2">
+                    <Input
+                      placeholder="IMAP host"
+                      value={imapForm.imapHost}
+                      onChange={(e) => setImapForm((f) => ({ ...f, imapHost: e.target.value }))}
+                    />
+                  </div>
+                  <Input
+                    placeholder="Port"
+                    value={imapForm.imapPort}
+                    onChange={(e) => setImapForm((f) => ({ ...f, imapPort: e.target.value }))}
+                  />
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="col-span-2">
+                    <Input
+                      placeholder="SMTP host"
+                      value={imapForm.smtpHost}
+                      onChange={(e) => setImapForm((f) => ({ ...f, smtpHost: e.target.value }))}
+                    />
+                  </div>
+                  <Input
+                    placeholder="Port"
+                    value={imapForm.smtpPort}
+                    onChange={(e) => setImapForm((f) => ({ ...f, smtpPort: e.target.value }))}
+                  />
+                </div>
+              </div>
+            )}
+
+            <Button type="submit" className="w-full" disabled={isLoading === "imap"}>
+              {isLoading === "imap" ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+              Connect IMAP Account
+            </Button>
+          </form>
+        )}
+
+        <p className="text-center text-xs text-muted-foreground">
+          By signing in, you agree to our terms of service.
+        </p>
+      </div>
+    </div>
+  );
+}

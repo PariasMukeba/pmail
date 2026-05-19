@@ -1,0 +1,39 @@
+#!/bin/sh
+# Pre-commit hook — runs on every `git commit`
+# Blocks the commit if any check fails.
+
+set -e  # exit immediately on any error
+
+# ── 1. Lint and format staged files ──────────────────────────────────────────
+echo "[pre-commit] Running lint-staged..."
+npx lint-staged
+
+# ── 2. TypeScript strict check ────────────────────────────────────────────────
+echo "[pre-commit] Running typecheck..."
+npm run typecheck
+
+# ── 3. Check for logged email content ────────────────────────────────────────
+# Block commits that log email body, subject, or sender — CLAUDE.md non-negotiable.
+STAGED_TS=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '\.(ts|tsx)$' || true)
+
+if [ -n "$STAGED_TS" ]; then
+  VIOLATIONS=$(echo "$STAGED_TS" | xargs grep -n \
+    -e 'console\.log.*email' \
+    -e 'console\.log.*subject' \
+    -e 'console\.log.*body' \
+    -e 'console\.log.*sender' \
+    -e 'console\.log.*recipient' \
+    2>/dev/null || true)
+
+  if [ -n "$VIOLATIONS" ]; then
+    echo ""
+    echo "ERROR: Logging email content is forbidden (CLAUDE.md non-negotiable)"
+    echo ""
+    echo "$VIOLATIONS"
+    echo ""
+    echo "Remove the console.log statements before committing."
+    exit 1
+  fi
+fi
+
+echo "[pre-commit] All checks passed."
