@@ -9,8 +9,7 @@
 
 Aire is a server-side-rendered, AI-first email PWA. It connects to any number of
 email accounts (Gmail, Outlook, IMAP), presents a unified inbox, and uses Claude
-to summarise, categorise, draft, and prioritise email — all without storing
-unencrypted content at rest.
+to summarise, categorise, draft, and prioritise email.
 
 ---
 
@@ -24,20 +23,17 @@ Next.js 14 App Router  ───────────────────
   app/                  (React Server Components + Client)   │
   app/api/              (Route Handlers — all auth-gated)    │
     │                                                        │
-    ├──── Prisma ORM ──────► PostgreSQL                      │
-    │      (encrypted fields)                                │
+    ├──── Prisma ORM ──────► SQLite (dev) / PostgreSQL (prod)│
     │                                                        │
     ├──── lib/ai/email-ai.ts ──► Anthropic Claude API        │
     │                                                        │
-    ├──── lib/sync/ ──────────► Gmail API                    │
+    ├──── lib/sync/ ──────────► Gmail REST API               │
     │                      └──► Microsoft Graph API          │
-    │                      └──► IMAP (nodemailer)            │
+    │                      └──► IMAP (imap npm package)      │
     │                                                        │
     └──── NextAuth v5 ────────► Google OAuth                 │
                            └──► Microsoft OAuth              │
-                                                             │
-BullMQ workers (same Next.js process in dev;                 │
- separate worker.ts process in prod) ────────────────────────┘
+                           └──► IMAP Credentials             │
 ```
 
 ---
@@ -46,61 +42,77 @@ BullMQ workers (same Next.js process in dev;                 │
 
 ### `app/` — Presentation layer
 
-- **React Server Components** fetch data directly via Prisma (no API round-trip).
-- **Client Components** are islands: interactive widgets that receive data as props.
-- `app/api/` route handlers handle mutations and webhook ingress only.
-- No Prisma calls in Client Components — data always enters via RSC or SWR.
+- **React Server Components** protect routes via session check in layout.
+- **Client Components** fetch data via SWR from API routes.
+- `app/api/` route handlers handle all data mutations and reads.
+- No direct Prisma calls in Client Components.
 
 ### `lib/` — Domain layer
 
 | Path | Responsibility |
-|------|---------------|
-| `lib/ai/email-ai.ts` | **Only** place Anthropic SDK is called. Exposes typed functions; never leaks raw API responses to callers. |
-| `lib/sync/` | Provider-specific adapters. Each exports `fetchMessages`, `sendMessage`, `watchChanges`. Route handlers never import Gmail or Graph SDKs directly. |
-| `lib/crypto/` | AES-256-GCM encrypt/decrypt. Used by sync adapters before any DB write. |
-| `lib/errors.ts` | Typed error classes. All throw sites use these. |
-| `lib/constants.ts` | Named constants — no magic numbers anywhere else. |
-| `lib/validators/` | Zod schemas shared between route handlers and tests. |
+|------|----------------|
+| `lib/ai/email-ai.ts` | Only place Anthropic SDK is called. Exposes typed functions. |
+| `lib/sync/` | Provider adapters: `gmail.ts`, `microsoft.ts`, `imap.ts`. Each implements `EmailProvider`. Route handlers never import Gmail/Graph/IMAP directly. |
+| `lib/sync/index.ts` | Registry — maps provider strings (`"google"`, `"gmail"`, `"microsoft-entra-id"`, etc.) to the correct adapter. |
+| `lib/inbox.ts` | `queryInbox()` — single source of truth for email list queries with all filter logic. |
+| `lib/skills/crypto/` | AES-256-GCM encrypt/decrypt for IMAP passwords only. |
+| `lib/errors.ts` | Typed error classes used at all throw sites. |
+| `lib/constants.ts` | Named constants — no magic numbers elsewhere. |
+| `lib/stores/` | Zustand stores: `useEmailStore`, `useComposeStore`, `useUIStore`. |
 
 ### `prisma/` — Data layer
 
-Prisma ORM with PostgreSQL. Schema is the single source of truth for the data
-model. Migrations are generated with `prisma migrate dev` and committed to git.
-
-### BullMQ workers — Async layer
-
-Long-running work (sync cycles, AI batch analysis) runs in BullMQ queues backed
-by Redis. In development, workers run in the same process via `--experimental-worker`.
-In production, a separate `worker.ts` entrypoint is deployed as a long-running
-process alongside the Next.js server.
+Prisma ORM with SQLite in development, PostgreSQL in production. Schema is the
+single source of truth. Migrations committed to git.
 
 ---
 
-## Auth flow
+## Auth architecture
+
+NextAuth v5 uses a **split config** required by the Edge middleware runtime:
+
+| File | Used by | Constraint |
+|------|---------|-----------|
+| `auth.config.ts` | `middleware.ts` | Edge-compatible only — no Node.js imports |
+| `auth.ts` | API routes, Server Components | Full Node.js — imports PrismaAdapter |
+
+Session strategy: **JWT**. The PrismaAdapter creates `User` and `Account` rows on
+sign-in but session data travels as a signed JWT cookie, not a database session.
+
+**Token storage**: OAuth `access_token` and `refresh_token` are stored in the
+`Account` table (snake_case fields required by PrismaAdapter). The Gmail and
+Microsoft adapters refresh tokens automatically on 401 responses.
+
+**Provider name mapping**: NextAuth stores `provider: "google"` but the sync
+registry key is `"gmail"`. Both are aliased in `lib/sync/index.ts`.
 
 ```
-User → /auth/signin
-  → NextAuth v5 → Google OAuth / Microsoft OAuth
-  → Callback stores { accessToken, refreshToken } encrypted in Account table
-  → Session contains only { userId, email, name } — no tokens
-  → All provider API calls use tokens fetched from DB server-side
+User signs in with Google
+  → PrismaAdapter creates/updates User + Account rows
+  → JWT callback: token.userId = user.id
+  → Session: session.user.id = token.userId
+  → All API routes read session.user.id to scope DB queries
 ```
-
-Tokens never reach the browser. `NEXTAUTH_SECRET` rotates quarterly.
 
 ---
 
 ## Data flow for reading email
 
 ```
-1. RSC: app/(inbox)/page.tsx
-   └─ queries Thread table via Prisma (no decryption — list view uses metadata only)
+1. User lands on /inbox (requires session — MainLayout redirects if not authed)
 
-2. RSC: app/(inbox)/[threadId]/page.tsx
-   └─ queries Email table, calls lib/crypto/decrypt(email.bodyEncrypted)
-   └─ passes decrypted body to Client Component as prop (server boundary)
+2. EmailListPane mounts → SWR fetches GET /api/emails
+   └─ On empty result: auto-triggers POST /api/sync/all
 
-3. Client Component renders body — body never round-trips through an API route
+3. POST /api/sync/all
+   └─ Finds all Account rows for session.user.id where isActive=true
+   └─ For each account: calls adapter.fetchEmails()
+      └─ Gmail: GET /users/me/messages (list) → 20 concurrent GETs for full messages
+      └─ IMAP: connects, fetches headers + body
+   └─ Upserts results into CachedEmail table
+   └─ Upserts SyncState (historyId / deltaLink for incremental future syncs)
+
+4. SWR mutate() re-fetches GET /api/emails → list renders
 ```
 
 ---
@@ -108,41 +120,54 @@ Tokens never reach the browser. `NEXTAUTH_SECRET` rotates quarterly.
 ## Data flow for AI analysis
 
 ```
-1. User clicks "Summarise" in browser
-2. POST /api/ai/summarise { emailId }
-3. Route handler:
-   a. Validates session
-   b. Fetches email from DB, decrypts body server-side
-   c. Calls lib/ai/email-ai.ts → summariseEmail(decryptedBody)
-   d. Anthropic SDK call — body never leaves the server
-   e. Stores result in AIAnalysis table (summary, actionItems — no body copy)
-   f. Returns { summary, actionItems, sentiment }
-4. Client updates UI via SWR mutate
+1. User views email → SummaryCard mounts → POST /api/ai/summarize { emailId }
+2. Route handler:
+   a. Validates session, fetches email from CachedEmail
+   b. Calls lib/ai/email-ai.ts → summarizeEmail(email)
+   c. Anthropic SDK called server-side — body never leaves the server
+   d. Returns { summary }
+3. SWR caches result; card renders summary
 ```
+
+---
+
+## Sync engine
+
+Sync runs in-request (no background queue). `POST /api/sync/all` is called:
+- Automatically on first page load when inbox is empty
+- Manually via the refresh button
+- Via SWR's 30-second polling interval
+
+**Gmail**: No `batchGet` endpoint exists in the Gmail REST API. Messages are
+fetched individually using a 20-worker concurrency pool to balance throughput
+against rate limits.
+
+**IMAP/nodemailer/mailparser** are excluded from the browser/Edge bundle via
+`serverExternalPackages` in `next.config.mjs`.
 
 ---
 
 ## PWA configuration
 
-- `next-pwa` with Workbox for service worker generation.
-- Offline shell: inbox list served from cache; email bodies are network-only.
+- `@ducanh2912/next-pwa` with Workbox for service worker generation.
+- Offline shell: `app/offline/page.tsx`.
 - Manifest: `public/manifest.json` — installable on iOS and Android.
-- Push notifications: Web Push API via `web-push` library, subscriptions stored in DB.
+- Push notifications: Web Push API via `web-push`, subscriptions in DB.
 
 ---
 
-## Key technology choices and why
+## Key technology choices
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Framework | Next.js 14 App Router | RSC lets us fetch data without client round-trips; built-in route handlers replace a separate API server |
-| ORM | Prisma | Type-safe queries, migration tooling, schema-as-code |
-| Auth | NextAuth v5 | First-class Next.js integration; handles OAuth token refresh automatically |
-| State (client) | Zustand | Minimal boilerplate; avoids the over-fetching trap of Redux |
-| State (server) | SWR | Stale-while-revalidate caching + optimistic updates out of the box |
-| AI | Anthropic Claude API | Best-in-class instruction following for email tasks; prompt caching reduces cost |
-| Queue | BullMQ + Redis | Reliable job processing with retries, delayed jobs, and rate limiting |
-| Encryption | AES-256-GCM | Authenticated encryption; envelope pattern with per-account keys |
+| Framework | Next.js 14 App Router | RSC + built-in route handlers |
+| ORM | Prisma | Type-safe queries, migration tooling |
+| Auth | NextAuth v5 | First-class Next.js integration, OAuth token refresh |
+| State (client) | Zustand | Minimal boilerplate |
+| State (server) | SWR | Stale-while-revalidate + optimistic updates |
+| AI | Anthropic Claude API | Best instruction following for email tasks |
+| DB (dev) | SQLite | Zero-config local development |
+| DB (prod) | PostgreSQL | Production-grade, same Prisma schema |
 
 ---
 
@@ -151,3 +176,4 @@ Tokens never reach the browser. `NEXTAUTH_SECRET` rotates quarterly.
 | Date | Change | Reason |
 |------|--------|--------|
 | 2026-05-19 | Initial document | Project setup |
+| 2026-05-19 | Updated to match actual implementation | Removed BullMQ/Redis/encryption references that were planned but not built |

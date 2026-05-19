@@ -7,21 +7,20 @@
 
 ## Design principles
 
-1. **Email content is always encrypted at rest.** `bodyEncrypted`, `subjectEncrypted`,
-   `fromAddressEncrypted`, and `toAddressesEncrypted` are AES-256-GCM ciphertext.
-   Decryption happens in `lib/crypto/` at the application layer — never in SQL.
-2. **Metadata is stored in plaintext** to enable sorting, filtering, and counting
-   without decrypting every row. Metadata: `receivedAt`, `isRead`, `hasAttachments`,
-   `sizeEstimate`, `threadId`, `labelIds`.
-3. **No body copies in AI tables.** `AIAnalysis` stores derived outputs (summaries,
-   action items) but never a copy of the email body.
-4. **Tokens are encrypted with an envelope pattern.** Each `Account` row stores
-   `accessToken` and `refreshToken` encrypted with a per-account key, which is
-   itself encrypted with the application master key (`ENCRYPTION_MASTER_KEY` env var).
+1. **Email metadata in plaintext** — `subject`, `fromAddress`, `preview`, `isRead`,
+   `isStarred`, `labels`, etc. are stored unencrypted to enable sorting and filtering
+   without per-row decryption.
+2. **IMAP passwords encrypted at rest** — `Account.imapPasswordEncrypted` stores
+   AES-256-GCM ciphertext. All other credentials (OAuth tokens) are stored as-is
+   in the NextAuth PrismaAdapter fields.
+3. **Flat email cache** — emails are stored as `CachedEmail` rows (not a
+   Thread+Email hierarchy). `threadId` groups messages for reply chains.
+4. **No body copies in AI result columns** — `aiSummary` stores the derived output
+   only; the original `bodyText`/`bodyHtml` is never duplicated.
 
 ---
 
-## Full schema
+## Actual Prisma schema
 
 ```prisma
 // prisma/schema.prisma
@@ -31,348 +30,221 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"   // Change to "postgresql" for production
   url      = env("DATABASE_URL")
 }
 
-// ─── Identity ────────────────────────────────────────────────────────────────
-
 model User {
-  id        String    @id @default(cuid())
-  email     String    @unique
-  name      String?
-  avatarUrl String?
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime?           // Required by PrismaAdapter
+  image         String?             // Required by PrismaAdapter
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
-  accounts  Account[]
-  contacts  Contact[]
-  settings  UserSettings?
-
-  @@index([email])
+  accounts          Account[]
+  labels            Label[]
+  pushSubscriptions PushSubscription[]
 }
-
-model UserSettings {
-  id                  String   @id @default(cuid())
-  userId              String   @unique
-  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  aiSummariseEnabled  Boolean  @default(true)
-  aiReplyEnabled      Boolean  @default(true)
-  theme               String   @default("system") // "light" | "dark" | "system"
-  notificationsEnabled Boolean @default(true)
-  updatedAt           DateTime @updatedAt
-}
-
-// ─── Email accounts ───────────────────────────────────────────────────────────
 
 model Account {
-  id                  String    @id @default(cuid())
-  userId              String
-  user                User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  provider            Provider
-  providerAccountId   String    // Gmail: user's Google sub; Graph: AAD object ID
-  emailAddress        String    // plaintext — used only for display
-  displayName         String?
+  id                String   @id @default(cuid())
+  userId            String
+  type              String   @default("oauth")  // Required by PrismaAdapter
 
-  // Envelope-encrypted OAuth tokens. Plaintext values never written to DB.
-  accessTokenEncrypted  Bytes
-  refreshTokenEncrypted Bytes
-  encryptedKeyIv        Bytes   // IV for the per-account key ciphertext
-  encryptedKey          Bytes   // per-account encryption key, wrapped with master key
-  tokenExpiresAt        DateTime?
-  scope                 String?
+  // NextAuth provider fields
+  provider          String
+  providerAccountId String
 
-  mailboxes   Mailbox[]
-  threads     Thread[]
-  emails      Email[]
-  labels      Label[]
-  syncState   SyncState?
-  pushSubscriptions PushSubscription[]
+  // OAuth token fields — snake_case required by PrismaAdapter
+  access_token      String?
+  refresh_token     String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  // Custom Aire fields
+  imapHost              String?
+  imapPort              Int?
+  smtpHost              String?
+  smtpPort              Int?
+  imapUser              String?
+  imapPasswordEncrypted String?   // AES-256-GCM ciphertext (JSON: {encrypted, iv, tag})
+  email                 String?   // Display email address (patched after OAuth sign-in)
+  displayName           String?
+  color                 String   @default("#6366F1")
+  isActive              Boolean  @default(true)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  syncState SyncState?
+  emails    CachedEmail[]
+  labels    Label[]
 
   @@unique([provider, providerAccountId])
-  @@index([userId])
 }
-
-enum Provider {
-  GMAIL
-  MICROSOFT
-  IMAP
-}
-
-// ─── Mailboxes / folders ──────────────────────────────────────────────────────
-
-model Mailbox {
-  id              String       @id @default(cuid())
-  accountId       String
-  account         Account      @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  name            String       // display name ("INBOX", "Sent", "Archive")
-  type            MailboxType
-  providerFolderId String?     // Gmail labelId, Graph folderId, or IMAP path
-  unreadCount     Int          @default(0)
-  totalCount      Int          @default(0)
-  updatedAt       DateTime     @updatedAt
-
-  @@unique([accountId, type])
-  @@index([accountId])
-}
-
-enum MailboxType {
-  INBOX
-  SENT
-  DRAFTS
-  TRASH
-  SPAM
-  ARCHIVE
-  CUSTOM
-}
-
-// ─── Labels ───────────────────────────────────────────────────────────────────
-
-model Label {
-  id               String   @id @default(cuid())
-  accountId        String
-  account          Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  name             String
-  color            String   @default("#6B7280")
-  providerLabelId  String?  // Gmail labelId
-  isSystem         Boolean  @default(false) // true for provider-native labels
-
-  threadLabels ThreadLabel[]
-
-  @@unique([accountId, name])
-  @@index([accountId])
-}
-
-model ThreadLabel {
-  threadId String
-  thread   Thread @relation(fields: [threadId], references: [id], onDelete: Cascade)
-  labelId  String
-  label    Label  @relation(fields: [labelId], references: [id], onDelete: Cascade)
-
-  @@id([threadId, labelId])
-}
-
-// ─── Threads & emails ─────────────────────────────────────────────────────────
-
-model Thread {
-  id               String    @id @default(cuid())
-  accountId        String
-  account          Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  providerThreadId String?   // Gmail threadId
-
-  // Metadata (plaintext) — used for list view without decryption
-  lastMessageAt    DateTime
-  messageCount     Int       @default(1)
-  unreadCount      Int       @default(0)
-  hasAttachments   Boolean   @default(false)
-  isStarred        Boolean   @default(false)
-  isSnoozed        Boolean   @default(false)
-  snoozedUntil     DateTime?
-
-  // Encrypted preview fields — decrypted only for display in thread list
-  subjectEncrypted      Bytes
-  snippetEncrypted      Bytes  // first ~200 chars of latest message body
-  fromAddressEncrypted  Bytes  // most recent sender
-
-  emails       Email[]
-  labels       ThreadLabel[]
-  aiSummaries  ThreadAISummary[]
-
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-
-  @@unique([accountId, providerThreadId])
-  @@index([accountId, lastMessageAt(sort: Desc)])
-  @@index([accountId, unreadCount])
-}
-
-model Email {
-  id              String   @id @default(cuid())
-  threadId        String
-  thread          Thread   @relation(fields: [threadId], references: [id], onDelete: Cascade)
-  accountId       String
-  account         Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  providerEmailId String?  // Gmail messageId
-
-  // Metadata (plaintext)
-  receivedAt      DateTime
-  sentAt          DateTime?
-  isRead          Boolean  @default(false)
-  isDraft         Boolean  @default(false)
-  isOutbound      Boolean  @default(false) // true for sent mail
-  hasAttachments  Boolean  @default(false)
-  sizeEstimate    Int?     // bytes
-
-  // Encrypted content
-  fromAddressEncrypted  Bytes
-  toAddressesEncrypted  Bytes  // JSON array, encrypted
-  ccAddressesEncrypted  Bytes?
-  subjectEncrypted      Bytes
-  bodyHtmlEncrypted     Bytes?
-  bodyTextEncrypted     Bytes
-  // Each field encrypted independently with the account key.
-  // IV is prepended to the ciphertext (first 12 bytes).
-
-  attachments   Attachment[]
-  aiAnalyses    AIAnalysis[]
-
-  createdAt     DateTime @default(now())
-
-  @@unique([accountId, providerEmailId])
-  @@index([threadId, receivedAt(sort: Desc)])
-}
-
-model Attachment {
-  id          String   @id @default(cuid())
-  emailId     String
-  email       Email    @relation(fields: [emailId], references: [id], onDelete: Cascade)
-  filename    String   // plaintext — filename is not sensitive
-  mimeType    String
-  sizeBytes   Int
-  storageKey  String   // object storage path (content is stored encrypted separately)
-  createdAt   DateTime @default(now())
-
-  @@index([emailId])
-}
-
-// ─── AI outputs ───────────────────────────────────────────────────────────────
-
-model AIAnalysis {
-  id            String   @id @default(cuid())
-  emailId       String
-  email         Email    @relation(fields: [emailId], references: [id], onDelete: Cascade)
-
-  // Derived outputs only — no body copy
-  summary       String   // 1-3 sentences
-  actionItems   String[] // extracted to-dos
-  sentiment     Sentiment
-  category      EmailCategory
-  priority      Int      @default(0) // 0 (low) – 3 (urgent)
-
-  // Provenance — critical for auditing prompt changes
-  promptVersion String   // e.g. "summarise-v1.2"
-  model         String   // e.g. "claude-sonnet-4-6"
-
-  createdAt     DateTime @default(now())
-
-  @@index([emailId])
-}
-
-model ThreadAISummary {
-  id            String   @id @default(cuid())
-  threadId      String
-  thread        Thread   @relation(fields: [threadId], references: [id], onDelete: Cascade)
-  summary       String
-  promptVersion String
-  model         String
-  createdAt     DateTime @default(now())
-
-  @@index([threadId])
-}
-
-enum Sentiment {
-  POSITIVE
-  NEUTRAL
-  NEGATIVE
-  URGENT
-}
-
-enum EmailCategory {
-  PERSONAL
-  WORK
-  NEWSLETTER
-  NOTIFICATION
-  RECEIPT
-  SPAM
-  OTHER
-}
-
-// ─── Contacts ─────────────────────────────────────────────────────────────────
-
-model Contact {
-  id           String   @id @default(cuid())
-  userId       String
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  emailAddress String   // plaintext — used for autocomplete
-  name         String?
-  avatarUrl    String?
-  frequency    Int      @default(0) // higher = contacted more often; used for autocomplete ranking
-
-  updatedAt    DateTime @updatedAt
-
-  @@unique([userId, emailAddress])
-  @@index([userId, frequency(sort: Desc)])
-}
-
-// ─── Sync state ───────────────────────────────────────────────────────────────
 
 model SyncState {
-  id            String     @id @default(cuid())
-  accountId     String     @unique
-  account       Account    @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  status        SyncStatus @default(IDLE)
-  lastSyncAt    DateTime?
-  // Provider-specific cursor for delta sync
-  gmailHistoryId   String? // Gmail History API
-  graphDeltaToken  String? // Microsoft Graph delta link
-  imapUidValidity  Int?    // IMAP UIDVALIDITY
-  imapUidNext      Int?    // IMAP UIDNEXT
+  id            String    @id @default(cuid())
+  accountId     String    @unique
+  lastSyncedAt  DateTime?
+  nextPageToken String?   // Gmail pagination token
+  historyId     String?   // Gmail History API cursor for incremental sync
+  deltaLink     String?   // Microsoft Graph delta link
+  updatedAt     DateTime  @updatedAt
 
-  errorMessage  String?
-  updatedAt     DateTime @updatedAt
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
 }
 
-enum SyncStatus {
-  IDLE
-  SYNCING
-  ERROR
-  RATE_LIMITED
+model CachedEmail {
+  id               String   @id @default(cuid())
+  accountId        String
+  threadId         String   // Groups messages in the same conversation
+  messageId        String   // Provider message ID (Gmail messageId, IMAP UID)
+  subject          String   @default("")
+  fromName         String   @default("")
+  fromAddress      String   @default("")
+  toAddresses      String   @default("[]")   // JSON: [{name, address}]
+  ccAddresses      String   @default("[]")   // JSON: [{name, address}]
+  preview          String   @default("")     // Snippet / first ~200 chars
+  bodyText         String?                  // Plain-text body
+  bodyHtml         String?                  // HTML body
+  rawMime          String?
+  date             DateTime
+  receivedAt       DateTime @default(now())
+  isRead           Boolean  @default(false)
+  isStarred        Boolean  @default(false)
+  isDraft          Boolean  @default(false)
+  labels           String   @default("[]")  // JSON: ["inbox", "unread", ...]
+  hasAttachments   Boolean  @default(false)
+  aiPriority       String   @default("normal")  // "high" | "normal" | "low"
+  aiSummary        String?
+  aiActionItems    String?  // JSON array of action item strings
+  inReplyTo        String?
+  references       String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, messageId])
+  @@index([accountId, date])
+  @@index([accountId, threadId])
+  @@index([accountId, isRead])
 }
 
-// ─── Push notifications ───────────────────────────────────────────────────────
+model Label {
+  id        String   @id @default(cuid())
+  userId    String
+  accountId String?
+  name      String
+  color     String   @default("#6366F1")
+  syncedId  String?
+  isSystem  Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account Account? @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, accountId, name])
+}
+
+model Draft {
+  id              String   @id @default(cuid())
+  accountId       String
+  userId          String
+  toAddresses     String   @default("[]")
+  ccAddresses     String   @default("[]")
+  bccAddresses    String   @default("[]")
+  subject         String   @default("")
+  body            String   @default("")
+  attachments     String   @default("[]")
+  providerDraftId String?
+  inReplyToId     String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
 
 model PushSubscription {
-  id          String   @id @default(cuid())
-  accountId   String
-  account     Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  endpoint    String   @unique
-  p256dhKey   String
-  authKey     String
-  createdAt   DateTime @default(now())
+  id        String   @id @default(cuid())
+  userId    String
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 ```
 
 ---
 
-## Encryption key hierarchy
+## PrismaAdapter requirements
 
-```
-ENCRYPTION_MASTER_KEY (env var, never in DB)
-    │
-    ▼ wraps
-Account.encryptedKey  (per-account AES-256 key, stored encrypted in DB)
-    │
-    ▼ encrypts
-Email.bodyTextEncrypted, Email.subjectEncrypted, ...
-```
+NextAuth v5's PrismaAdapter expects **exact field names** on the `Account` model.
+Missing or renamed fields cause a `Unknown argument` error on sign-in:
 
-The master key rotates by re-encrypting all `Account.encryptedKey` values.
-Email ciphertext does not need to be re-encrypted on master key rotation.
+| Field | Type | Required by |
+|-------|------|-------------|
+| `type` | `String` | PrismaAdapter |
+| `access_token` | `String?` | PrismaAdapter (OAuth token) |
+| `refresh_token` | `String?` | PrismaAdapter (OAuth token) |
+| `expires_at` | `Int?` | PrismaAdapter (epoch seconds) |
+| `token_type` | `String?` | PrismaAdapter |
+| `scope` | `String?` | PrismaAdapter |
+| `id_token` | `String?` | PrismaAdapter |
+| `session_state` | `String?` | PrismaAdapter |
+| `emailVerified` | `DateTime?` on User | PrismaAdapter |
+| `image` | `String?` on User | PrismaAdapter |
+
+The `email` field on `Account` is not set by PrismaAdapter — it is patched
+in the `signIn` callback in `auth.ts` after OAuth completes.
 
 ---
 
-## Search strategy
+## IMAP password encryption
 
-Full-text search requires decryption. We decrypt on read in a tightly scoped
-server function (`lib/search/searchEmails.ts`) and never cache plaintext. This
-is an accepted trade-off — the alternative (deterministic encryption for
-indexed fields) would weaken the security of those fields.
+```
+ENCRYPTION_SECRET (env var)
+    │  SHA-256 → 32-byte AES key
+    ▼
+lib/skills/crypto/encrypt-imap-password.ts
+    └─ AES-256-GCM(plaintext, randomIV)
+    └─ stores { encrypted (hex), iv (hex), tag (hex) }
+    └─ JSON-stringified into Account.imapPasswordEncrypted
+```
 
-For subject and sender, we use deterministic encryption (AES-SIV) to allow
-exact-match lookups without full decryption scans.
+OAuth tokens (`access_token`, `refresh_token`) are stored as-is — they are
+server-side-only values never returned to the browser.
+
+---
+
+## Label storage
+
+Labels are stored as a JSON array string in `CachedEmail.labels`:
+
+```json
+["inbox", "unread", "important"]
+```
+
+Gmail label IDs are normalised in `lib/sync/gmail.ts`:
+
+| Gmail label ID | Stored as |
+|----------------|-----------|
+| `INBOX` | `"inbox"` |
+| `UNREAD` | `"unread"` |
+| `STARRED` | `"starred"` |
+| `DRAFT` | `"draft"` |
+| `TRASH` | `"trash"` |
+| `SENT` | `"sent"` |
+| `IMPORTANT` | `"important"` |
+
+SQLite string-contains is used for label filtering:
+`WHERE labels LIKE '%"inbox"%'`
 
 ---
 
@@ -381,3 +253,4 @@ exact-match lookups without full decryption scans.
 | Date | Change | Reason |
 |------|--------|--------|
 | 2026-05-19 | Initial schema | Project setup |
+| 2026-05-19 | Rewrote to match actual Prisma schema | Original doc described planned encrypted schema; actual implementation uses flat CachedEmail with plaintext fields |
