@@ -38,6 +38,9 @@ Thumbs.db
 coverage/
 .nyc_output/
 
+# Docs (review-only, not part of deployment)
+docs/
+
 # Misc
 *.tsbuildinfo
 next-env.d.ts

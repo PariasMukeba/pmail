@@ -1,0 +1,22 @@
+{
+  "framework": "nextjs",
+  "buildCommand": "prisma migrate deploy && next build",
+  "installCommand": "npm ci",
+  "regions": ["iad1"],
+  "env": {
+    "NEXTAUTH_URL": "@nextauth_url",
+    "AUTH_SECRET": "@auth_secret",
+    "NEXTAUTH_SECRET": "@auth_secret",
+    "GOOGLE_CLIENT_ID": "@google_client_id",
+    "GOOGLE_CLIENT_SECRET": "@google_client_secret",
+    "MICROSOFT_CLIENT_ID": "@microsoft_client_id",
+    "MICROSOFT_CLIENT_SECRET": "@microsoft_client_secret",
+    "ANTHROPIC_API_KEY": "@anthropic_api_key",
+    "DATABASE_URL": "@database_url",
+    "DIRECT_URL": "@direct_url",
+    "ENCRYPTION_SECRET": "@encryption_secret",
+    "VAPID_PUBLIC_KEY": "@vapid_public_key",
+    "VAPID_PRIVATE_KEY": "@vapid_private_key",
+    "VAPID_SUBJECT": "@vapid_subject"
+  }
+}
