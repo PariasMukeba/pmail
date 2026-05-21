@@ -15,11 +15,22 @@ import webpush from "web-push";
 import { supabase } from "@/lib/supabase";
 import { ValidationError } from "@/lib/errors";
 
-webpush.setVapidDetails(
-  process.env.VAPID_SUBJECT!,
-  process.env.VAPID_PUBLIC_KEY!,
-  process.env.VAPID_PRIVATE_KEY!,
-);
+let vapidInitialized = false;
+
+/** Lazily configure VAPID so the module can be imported at build time without env vars. */
+function initVapid(): void {
+  if (vapidInitialized) return;
+  const subject = process.env.VAPID_SUBJECT;
+  const publicKey = process.env.VAPID_PUBLIC_KEY;
+  const privateKey = process.env.VAPID_PRIVATE_KEY;
+  if (!subject || !publicKey || !privateKey) {
+    throw new Error(
+      "VAPID_SUBJECT, VAPID_PUBLIC_KEY, and VAPID_PRIVATE_KEY must be set",
+    );
+  }
+  webpush.setVapidDetails(subject, publicKey, privateKey);
+  vapidInitialized = true;
+}
 
 const notifySchema = z.object({
   userId: z.string(),
@@ -34,6 +45,7 @@ const notifySchema = z.object({
  * Stale subscriptions (410 Gone) are automatically removed.
  */
 export async function POST(request: Request): Promise<NextResponse> {
+  initVapid();
   const session = await auth();
   const internalSecret = request.headers.get("x-internal-secret");
   const isInternal =
