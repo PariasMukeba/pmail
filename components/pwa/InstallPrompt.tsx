@@ -4,6 +4,11 @@ import { useEffect, useState } from "react";
 import { X, Download } from "lucide-react";
 import { useUIStore } from "@/lib/stores/useUIStore";
 
+interface BeforeInstallPromptEvent extends Event {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
+}
+
 export function InstallPrompt() {
   const { installPromptEvent, setInstallPromptEvent } = useUIStore();
   const [showBanner, setShowBanner] = useState(false);
@@ -11,46 +16,41 @@ export function InstallPrompt() {
   const [dismissed, setDismissed] = useState(false);
 
   useEffect(() => {
-    // Check if already dismissed
-    const d = localStorage.getItem("aire-install-dismissed");
-    if (d) return;
+    if (localStorage.getItem("pmail-install-dismissed")) return;
 
-    // Track visit count
-    const visits = parseInt(localStorage.getItem("aire-visit-count") || "0", 10) + 1;
-    localStorage.setItem("aire-visit-count", String(visits));
-
-    // Detect iOS
-    const ios = /iphone|ipad|ipod/i.test(navigator.userAgent) && !(window as unknown as { MSStream?: unknown }).MSStream;
+    const ios =
+      /iphone|ipad|ipod/i.test(navigator.userAgent) &&
+      !(window as unknown as { MSStream?: unknown }).MSStream;
     setIsIOS(ios);
 
-    // Show banner after 3 visits
-    if (visits >= 3) {
+    // Show banner immediately for iOS (no install event exists on Safari)
+    if (ios) {
       setShowBanner(true);
+      return;
     }
 
-    // Listen for install prompt
+    // For Chrome/Edge: show banner as soon as the browser offers install
     const handler = (e: Event) => {
       e.preventDefault();
       setInstallPromptEvent(e as BeforeInstallPromptEvent);
-      if (visits >= 3) setShowBanner(true);
+      setShowBanner(true);
     };
     window.addEventListener("beforeinstallprompt", handler);
     return () => window.removeEventListener("beforeinstallprompt", handler);
   }, [setInstallPromptEvent]);
 
   const install = async () => {
-    if (installPromptEvent) {
-      await installPromptEvent.prompt();
-      const { outcome } = await installPromptEvent.userChoice;
-      if (outcome === "accepted") {
-        setInstallPromptEvent(null);
-        setShowBanner(false);
-      }
+    if (!installPromptEvent) return;
+    await installPromptEvent.prompt();
+    const { outcome } = await installPromptEvent.userChoice;
+    if (outcome === "accepted") {
+      setInstallPromptEvent(null);
+      setShowBanner(false);
     }
   };
 
   const dismiss = () => {
-    localStorage.setItem("aire-install-dismissed", "1");
+    localStorage.setItem("pmail-install-dismissed", "1");
     setShowBanner(false);
     setDismissed(true);
   };
@@ -65,27 +65,26 @@ export function InstallPrompt() {
           <p className="text-sm font-medium">Install Pmail for faster access</p>
           {isIOS && (
             <p className="text-xs text-muted-foreground mt-0.5">
-              Tap <span className="font-mono">⎙</span> then &ldquo;Add to Home Screen&rdquo;
+              Tap <span className="font-mono">⎙</span> then &ldquo;Add to Home
+              Screen&rdquo;
             </p>
           )}
         </div>
         {!isIOS && installPromptEvent && (
           <button
-            onClick={install}
+            onClick={() => void install()}
             className="text-sm text-primary font-medium hover:text-primary/80 transition-colors shrink-0"
           >
             Install
           </button>
         )}
-        <button onClick={dismiss} className="text-muted-foreground hover:text-foreground shrink-0">
+        <button
+          onClick={dismiss}
+          className="text-muted-foreground hover:text-foreground shrink-0"
+        >
           <X className="w-4 h-4" />
         </button>
       </div>
     </div>
   );
-}
-
-interface BeforeInstallPromptEvent extends Event {
-  prompt: () => Promise<void>;
-  userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
 }
