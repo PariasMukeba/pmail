@@ -1,9 +1,8 @@
 import { JSDOM } from "jsdom";
 // DOMPurify is a CommonJS module; this import works in Node.js with tsx/ts-node.
-// eslint-disable-next-line @typescript-eslint/no-require-imports
 const createDOMPurify = require("dompurify") as (
   window: Window & typeof globalThis,
-) => ReturnType<typeof import("dompurify")["default"]>;
+) => ReturnType<(typeof import("dompurify"))["default"]>;
 
 /**
  * Sanitize an HTML email body for safe rendering inside an isolated iframe.
@@ -34,16 +33,74 @@ export function sanitizeHtml(raw: string): string {
 
   const clean = purify.sanitize(preProcessed, {
     ALLOWED_TAGS: [
-      "a", "abbr", "b", "blockquote", "br", "caption", "cite", "code",
-      "col", "colgroup", "dd", "del", "details", "div", "dl", "dt",
-      "em", "figcaption", "figure", "h1", "h2", "h3", "h4", "h5", "h6",
-      "hr", "i", "img", "ins", "kbd", "li", "mark", "ol", "p", "pre",
-      "q", "s", "small", "span", "strong", "sub", "summary", "sup",
-      "table", "tbody", "td", "tfoot", "th", "thead", "time", "tr", "u", "ul",
+      "a",
+      "abbr",
+      "b",
+      "blockquote",
+      "br",
+      "caption",
+      "cite",
+      "code",
+      "col",
+      "colgroup",
+      "dd",
+      "del",
+      "details",
+      "div",
+      "dl",
+      "dt",
+      "em",
+      "figcaption",
+      "figure",
+      "h1",
+      "h2",
+      "h3",
+      "h4",
+      "h5",
+      "h6",
+      "hr",
+      "i",
+      "img",
+      "ins",
+      "kbd",
+      "li",
+      "mark",
+      "ol",
+      "p",
+      "pre",
+      "q",
+      "s",
+      "small",
+      "span",
+      "strong",
+      "sub",
+      "summary",
+      "sup",
+      "table",
+      "tbody",
+      "td",
+      "tfoot",
+      "th",
+      "thead",
+      "time",
+      "tr",
+      "u",
+      "ul",
     ],
     ALLOWED_ATTR: [
-      "href", "src", "alt", "title", "width", "height", "align", "valign",
-      "colspan", "rowspan", "datetime", "cite", "style",
+      "href",
+      "src",
+      "alt",
+      "title",
+      "width",
+      "height",
+      "align",
+      "valign",
+      "colspan",
+      "rowspan",
+      "datetime",
+      "cite",
+      "style",
       // Populated by blockExternalUris() so "show images" UX can restore them
       "data-blocked-src",
     ],
@@ -61,18 +118,20 @@ export function sanitizeHtml(raw: string): string {
  * Inline data: and cid: URLs are preserved.
  */
 function blockExternalUris(html: string): string {
-  return html
-    // Block external <img src="http..."> — replace with data-blocked-src for
-    // optional "show images" UX later.
-    .replace(
-      /(<img\b[^>]*?\s)src=(["'])(?!data:|cid:)(https?:\/\/[^"']*)\2/gi,
-      '$1src=$2$2 data-blocked-src=$2$3$2',
-    )
-    // Block CSS url() with external URLs (tracking pixels via background-image)
-    .replace(
-      /url\s*\(\s*(['"]?)(?!data:|cid:)(https?:\/\/[^)'"]+)\1\s*\)/gi,
-      "url(blocked)",
-    )
-    // Remove @import entirely
-    .replace(/@import\s+[^;]+;/gi, "");
+  return (
+    html
+      // Block external <img src="http..."> — replace with data-blocked-src for
+      // optional "show images" UX later.
+      .replace(
+        /(<img\b[^>]*?\s)src=(["'])(?!data:|cid:)(https?:\/\/[^"']*)\2/gi,
+        "$1src=$2$2 data-blocked-src=$2$3$2",
+      )
+      // Block CSS url() with external URLs (tracking pixels via background-image)
+      .replace(
+        /url\s*\(\s*(['"]?)(?!data:|cid:)(https?:\/\/[^)'"]+)\1\s*\)/gi,
+        "url(blocked)",
+      )
+      // Remove @import entirely
+      .replace(/@import\s+[^;]+;/gi, "")
+  );
 }
