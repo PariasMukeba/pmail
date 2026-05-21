@@ -86,6 +86,8 @@
     "@vitejs/plugin-react": "^4.3.4",
     "@vitest/coverage-v8": "^2.1.9",
     "autoprefixer": "^10.4.20",
+    "eslint": "^8.57.1",
+    "eslint-config-next": "^14.2.35",
     "husky": "^9.1.7",
     "lint-staged": "^15.3.0",
     "msw": "^2.7.0",
