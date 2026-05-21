@@ -39,7 +39,10 @@ const nextConfig = {
   // Prevent Next.js from bundling Node.js-only packages.
   // imap / mailparser / nodemailer rely on node:net, node:tls, node:stream
   // which webpack cannot resolve in a browser-targeting bundle.
-  serverExternalPackages: ["imap", "mailparser", "nodemailer"],
+  // Note: renamed to serverExternalPackages in Next.js 15; use experimental in 14.
+  experimental: {
+    serverComponentsExternalPackages: ["imap", "mailparser", "nodemailer"],
+  },
   images: {
     remotePatterns: [{ protocol: "https", hostname: "**" }],
   },
