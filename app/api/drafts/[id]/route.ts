@@ -6,7 +6,7 @@
 import { auth } from "@/auth";
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { prisma } from "@/lib/prisma";
+import { supabase } from "@/lib/supabase";
 import { ValidationError, NotFoundError } from "@/lib/errors";
 
 const patchDraftSchema = z.object({
@@ -52,9 +52,12 @@ export async function PATCH(
     );
   }
 
-  const existing = await prisma.draft.findFirst({
-    where: { id: params.id, userId: session.user.id },
-  });
+  const { data: existing } = await supabase
+    .from("Draft")
+    .select("id")
+    .eq("id", params.id)
+    .eq("userId", session.user.id)
+    .single();
 
   if (!existing) {
     const err = new NotFoundError("Draft", params.id);
@@ -62,17 +65,21 @@ export async function PATCH(
   }
 
   const { to, cc, bcc, subject, body: draftBody } = parsed.data;
+  const updateData: Record<string, unknown> = {
+    updatedAt: new Date().toISOString(),
+  };
+  if (to !== undefined) updateData.toAddresses = JSON.stringify(to);
+  if (cc !== undefined) updateData.ccAddresses = JSON.stringify(cc);
+  if (bcc !== undefined) updateData.bccAddresses = JSON.stringify(bcc);
+  if (subject !== undefined) updateData.subject = subject;
+  if (draftBody !== undefined) updateData.body = draftBody;
 
-  const draft = await prisma.draft.update({
-    where: { id: params.id },
-    data: {
-      ...(to !== undefined && { toAddresses: JSON.stringify(to) }),
-      ...(cc !== undefined && { ccAddresses: JSON.stringify(cc) }),
-      ...(bcc !== undefined && { bccAddresses: JSON.stringify(bcc) }),
-      ...(subject !== undefined && { subject }),
-      ...(draftBody !== undefined && { body: draftBody }),
-    },
-  });
+  const { data: draft } = await supabase
+    .from("Draft")
+    .update(updateData)
+    .eq("id", params.id)
+    .select("*")
+    .single();
 
   return NextResponse.json({ draft });
 }
@@ -90,16 +97,19 @@ export async function DELETE(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const existing = await prisma.draft.findFirst({
-    where: { id: params.id, userId: session.user.id },
-  });
+  const { data: existing } = await supabase
+    .from("Draft")
+    .select("id")
+    .eq("id", params.id)
+    .eq("userId", session.user.id)
+    .single();
 
   if (!existing) {
     const err = new NotFoundError("Draft", params.id);
     return NextResponse.json({ error: err.message }, { status: 404 });
   }
 
-  await prisma.draft.delete({ where: { id: params.id } });
+  await supabase.from("Draft").delete().eq("id", params.id);
 
   return new NextResponse(null, { status: 204 });
 }

@@ -9,7 +9,7 @@
  */
 
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { supabase } from "@/lib/supabase";
 
 /** Shape of a Microsoft Graph change notification. */
 interface GraphNotification {
@@ -46,7 +46,6 @@ export async function GET(request: Request): Promise<Response> {
  * sync for the affected account.  Always responds 202 immediately.
  */
 export async function POST(request: Request): Promise<NextResponse> {
-  // Microsoft requires HTTP 202 for successful notification receipt
   let payload: GraphNotification;
 
   try {
@@ -57,31 +56,31 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   const notifications = payload?.value ?? [];
 
-  // Fire-and-forget background syncs for each affected subscription
   void (async () => {
     for (const notification of notifications) {
       try {
         if (!notification.subscriptionId) continue;
 
-        // Find the account associated with this Graph subscription
-        // The subscriptionId is stored in syncState or account metadata
-        const accounts = await prisma.account.findMany({
-          where: { provider: "office365" },
-          include: { syncState: true },
-        });
+        const { data: accountRows } = await supabase
+          .from("Account")
+          .select("id,email,providerAccountId")
+          .eq("provider", "microsoft-entra-id");
 
-        // Match by resource path — typically contains the user's mail folder
         const resource = notification.resource ?? "";
-        const account = accounts.find((a) =>
-          (a.email && resource.includes(a.email)) || resource.includes(a.providerAccountId),
-        );
+        const account = (accountRows ?? []).find(
+          (a: Record<string, unknown>) =>
+            (a.email && resource.includes(a.email as string)) ||
+            resource.includes(a.providerAccountId as string),
+        ) as Record<string, unknown> | undefined;
 
         if (!account) continue;
 
-        await fetch(
-          `${process.env.NEXTAUTH_URL}/api/sync/${account.id}`,
-          { method: "POST", headers: { "x-internal-secret": process.env.INTERNAL_API_SECRET ?? "" } },
-        );
+        await fetch(`${process.env.NEXTAUTH_URL}/api/sync/${account.id}`, {
+          method: "POST",
+          headers: {
+            "x-internal-secret": process.env.INTERNAL_API_SECRET ?? "",
+          },
+        });
       } catch {
         // Swallow — must not throw
       }

@@ -3,8 +3,7 @@
 ## Project identity
 
 Pmail is an AI-first universal email PWA. Stack: Next.js 14 App Router, TypeScript,
-Tailwind, Prisma/SQLite (dev) / PostgreSQL (prod), NextAuth v5, Anthropic Claude API,
-Zustand, SWR.
+Tailwind, Supabase (PostgreSQL), NextAuth v5, Anthropic Claude API, Zustand, SWR.
 
 GitHub: https://github.com/PariasMukeba/pmail
 
@@ -42,8 +41,10 @@ MICROSOFT_CLIENT_SECRET=...
 
 ANTHROPIC_API_KEY=...
 
-DATABASE_URL=file:./dev.db               # Prisma CLI reads .env, not .env.local
-                                          # Keep DATABASE_URL in both files
+NEXT_PUBLIC_SUPABASE_URL=https://<ref>.supabase.co
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
+SUPABASE_URL=https://<ref>.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=eyJ...          # From Supabase → Settings → API → service_role
 
 ENCRYPTION_SECRET=<openssl rand -base64 32>  # Required for IMAP password encryption
 
@@ -65,18 +66,15 @@ redirect URI in Google Cloud Console, and enable the **Gmail API** in your proje
 
 NextAuth v5 uses a **split config** required by the Edge runtime:
 
-| File | Used by | Can import Node.js modules? |
-|------|---------|----------------------------|
-| `auth.config.ts` | `middleware.ts` only | No — Edge-compatible only |
-| `auth.ts` | API routes, Server Components | Yes — full Node.js |
+| File             | Used by                       | Can import Node.js modules? |
+| ---------------- | ----------------------------- | --------------------------- |
+| `auth.config.ts` | `middleware.ts` only          | No — Edge-compatible only   |
+| `auth.ts`        | API routes, Server Components | Yes — full Node.js          |
 
-**PrismaAdapter requirements** — the `Account` model must have these exact
-snake_case fields or sign-in crashes with "Unknown argument" errors:
-
-```
-type, access_token, refresh_token, expires_at, token_type,
-scope, id_token, session_state
-```
+**SupabaseAdapter** — `lib/supabase-auth-adapter.ts` is a custom NextAuth v5 adapter
+that writes to the Supabase `"User"` and `"Account"` tables (PascalCase, quoted).
+The `"Account"` table uses snake_case OAuth fields (`access_token`, `refresh_token`,
+`expires_at`, `token_type`, `scope`, `id_token`, `session_state`) to match NextAuth.
 
 **Provider name mapping** — NextAuth stores `provider: "google"` in the DB, but
 our sync code uses `"gmail"`. Both are aliased in `lib/sync/index.ts`.
@@ -88,20 +86,18 @@ so either variable works. NextAuth v5 looks for `AUTH_SECRET` by default.
 
 ## Database
 
-SQLite in development (`prisma/dev.db`), PostgreSQL in production.
+All environments use Supabase (PostgreSQL). Schema lives in `supabase/migrations/`.
 
 ```bash
-# First-time setup
-npx prisma migrate dev
+# First-time setup — run the SQL in the Supabase SQL Editor:
+# https://supabase.com/dashboard/project/<ref>/sql
+# Paste: supabase/migrations/20260519000000_init.sql
 
-# After schema changes
-npx prisma migrate dev --name <description>
-
-# Open GUI
-npx prisma studio
+# Schema changes — add a new file to supabase/migrations/ and run it in the SQL Editor.
 ```
 
-Prisma CLI reads `.env` (not `.env.local`). Keep `DATABASE_URL` in `.env`.
+All DB access goes through `lib/supabase.ts` (service role client, bypasses RLS).
+Tables are PascalCase quoted: `"User"`, `"Account"`, `"CachedEmail"`, etc.
 
 ---
 
@@ -126,33 +122,33 @@ Initial sync cap: `MAX_EMAILS_PER_SYNC = 100` (in `lib/constants.ts`).
 
 Sidebar folder IDs map to specific API query params in `EmailListPane`:
 
-| Sidebar ID | API param | DB filter |
-|------------|-----------|-----------|
-| `unified` | (none) | all emails |
-| `starred` | `starred=true` | `isStarred = true` |
-| `attachments` | `hasAttachments=true` | `hasAttachments = true` |
-| `priority` | `priority=high` | `aiPriority = "high"` |
-| `drafts` | `drafts=true` | `isDraft = true` |
-| `trash` | `label=trash` | labels JSON contains "trash" |
-| anything else | `label=<value>` | labels JSON contains value |
+| Sidebar ID    | API param             | DB filter                    |
+| ------------- | --------------------- | ---------------------------- |
+| `unified`     | (none)                | all emails                   |
+| `starred`     | `starred=true`        | `isStarred = true`           |
+| `attachments` | `hasAttachments=true` | `hasAttachments = true`      |
+| `priority`    | `priority=high`       | `aiPriority = "high"`        |
+| `drafts`      | `drafts=true`         | `isDraft = true`             |
+| `trash`       | `label=trash`         | labels JSON contains "trash" |
+| anything else | `label=<value>`       | labels JSON contains value   |
 
 ---
 
 ## Key API routes
 
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/emails` | Paginated email list with filters |
-| GET | `/api/emails/:id` | Single email + thread |
-| PATCH | `/api/emails/:id` | Update flags (isRead, isStarred, archived, trashed) |
-| GET | `/api/accounts` | List connected accounts for the current user |
-| POST | `/api/sync/all` | Sync all accounts, returns per-account results with errors |
-| POST | `/api/sync/:accountId` | Sync one account |
-| POST | `/api/send` | Send email via provider adapter |
-| POST | `/api/ai/summarize` | Generate AI summary for an email |
-| POST | `/api/ai/reply-draft` | Generate AI reply draft |
-| POST | `/api/ai/prioritize` | Score email priority (high/normal/low) |
-| POST | `/api/ai/suggest-actions` | Suggest action labels for an email |
+| Method | Path                      | Purpose                                                    |
+| ------ | ------------------------- | ---------------------------------------------------------- |
+| GET    | `/api/emails`             | Paginated email list with filters                          |
+| GET    | `/api/emails/:id`         | Single email + thread                                      |
+| PATCH  | `/api/emails/:id`         | Update flags (isRead, isStarred, archived, trashed)        |
+| GET    | `/api/accounts`           | List connected accounts for the current user               |
+| POST   | `/api/sync/all`           | Sync all accounts, returns per-account results with errors |
+| POST   | `/api/sync/:accountId`    | Sync one account                                           |
+| POST   | `/api/send`               | Send email via provider adapter                            |
+| POST   | `/api/ai/summarize`       | Generate AI summary for an email                           |
+| POST   | `/api/ai/reply-draft`     | Generate AI reply draft                                    |
+| POST   | `/api/ai/prioritize`      | Score email priority (high/normal/low)                     |
+| POST   | `/api/ai/suggest-actions` | Suggest action labels for an email                         |
 
 ---
 

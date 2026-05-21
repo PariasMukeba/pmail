@@ -11,7 +11,7 @@
 import { auth } from "@/auth";
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { prisma } from "@/lib/prisma";
+import { supabase } from "@/lib/supabase";
 import { emailAI } from "@/lib/ai/email-ai";
 import { ValidationError, NotFoundError, AIError } from "@/lib/errors";
 
@@ -41,29 +41,40 @@ export async function POST(request: Request): Promise<NextResponse> {
     );
   }
 
-  const email = await prisma.cachedEmail.findFirst({
-    where: {
-      id: parsed.data.emailId,
-      account: { userId: session.user.id },
-    },
-  });
+  // Verify ownership
+  const { data: userAccounts } = await supabase
+    .from("Account")
+    .select("id")
+    .eq("userId", session.user.id);
+  const accountIds = (userAccounts ?? []).map(
+    (a: Record<string, unknown>) => a.id as string,
+  );
 
-  if (!email) {
+  const { data: emailRow } = await supabase
+    .from("CachedEmail")
+    .select("*")
+    .eq("id", parsed.data.emailId)
+    .in("accountId", accountIds)
+    .single();
+
+  if (!emailRow) {
     const err = new NotFoundError("Email", parsed.data.emailId);
     return NextResponse.json({ error: err.message }, { status: 404 });
   }
 
-  // Build a minimal EmailForAI object for the Claude call
+  const email = emailRow as Record<string, unknown>;
+
   const emailForAI = {
-    subject: email.subject,
-    from: { name: email.fromName, address: email.fromAddress },
-    textBody: email.bodyText,
-    body: email.bodyHtml,
-    receivedAt: email.receivedAt,
+    subject: email.subject as string,
+    from: {
+      name: email.fromName as string,
+      address: email.fromAddress as string,
+    },
+    textBody: email.bodyText as string | null | undefined,
+    body: email.bodyHtml as string | null | undefined,
+    receivedAt: new Date(email.receivedAt as string),
   };
 
-  // Use summarizeEmail to get action items, then derive action suggestions.
-  // Falls back to heuristic defaults if AI is unavailable.
   let actions: string[] = [];
 
   try {
@@ -72,12 +83,14 @@ export async function POST(request: Request): Promise<NextResponse> {
     if (summaryResult?.actionItems && summaryResult.actionItems.length > 0) {
       actions = summaryResult.actionItems.slice(0, 3);
     } else {
-      // Derive sensible defaults from the summary sentiment / category
-      actions = deriveDefaultActions(email.subject, summaryResult?.category);
+      actions = deriveDefaultActions(
+        email.subject as string,
+        summaryResult?.category,
+      );
     }
   } catch (err) {
     if (err instanceof AIError && !err.retryable) {
-      actions = deriveDefaultActions(email.subject, undefined);
+      actions = deriveDefaultActions(email.subject as string, undefined);
     } else {
       return NextResponse.json(
         { error: "AI service temporarily unavailable" },
@@ -108,7 +121,6 @@ function deriveDefaultActions(
       break;
   }
 
-  // Heuristics based on subject line keywords
   const lower = subject.toLowerCase();
   if (lower.includes("invoice") || lower.includes("payment")) {
     return ["Review invoice", "Pay now", "Forward to finance"];

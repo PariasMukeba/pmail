@@ -12,7 +12,7 @@ import { auth } from "@/auth";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import webpush from "web-push";
-import { prisma } from "@/lib/prisma";
+import { supabase } from "@/lib/supabase";
 import { ValidationError } from "@/lib/errors";
 
 webpush.setVapidDetails(
@@ -34,7 +34,6 @@ const notifySchema = z.object({
  * Stale subscriptions (410 Gone) are automatically removed.
  */
 export async function POST(request: Request): Promise<NextResponse> {
-  // Require an authenticated session or a valid internal caller secret
   const session = await auth();
   const internalSecret = request.headers.get("x-internal-secret");
   const isInternal =
@@ -56,9 +55,12 @@ export async function POST(request: Request): Promise<NextResponse> {
     );
   }
 
-  const subscriptions = await prisma.pushSubscription.findMany({
-    where: { userId: parsed.data.userId },
-  });
+  const { data: subRows } = await supabase
+    .from("PushSubscription")
+    .select("*")
+    .eq("userId", parsed.data.userId);
+
+  const subscriptions = (subRows ?? []) as Record<string, unknown>[];
 
   const payload = JSON.stringify({
     title: parsed.data.title,
@@ -70,8 +72,8 @@ export async function POST(request: Request): Promise<NextResponse> {
     subscriptions.map(async (sub) => {
       await webpush.sendNotification(
         {
-          endpoint: sub.endpoint,
-          keys: { p256dh: sub.p256dh, auth: sub.auth },
+          endpoint: sub.endpoint as string,
+          keys: { p256dh: sub.p256dh as string, auth: sub.auth as string },
         },
         payload,
       );
@@ -79,20 +81,20 @@ export async function POST(request: Request): Promise<NextResponse> {
   );
 
   // Remove subscriptions that returned 410 Gone (browser unsubscribed)
-  const staleSubs = subscriptions.filter((_, i) => {
-    const result = results[i];
-    return (
-      result?.status === "rejected" &&
-      result.reason instanceof Error &&
-      "statusCode" in result.reason &&
-      (result.reason as { statusCode: number }).statusCode === 410
-    );
-  });
+  const staleIds = subscriptions
+    .filter((_, i) => {
+      const result = results[i];
+      return (
+        result?.status === "rejected" &&
+        result.reason instanceof Error &&
+        "statusCode" in result.reason &&
+        (result.reason as { statusCode: number }).statusCode === 410
+      );
+    })
+    .map((s) => s.id as string);
 
-  if (staleSubs.length > 0) {
-    await prisma.pushSubscription.deleteMany({
-      where: { id: { in: staleSubs.map((s) => s.id) } },
-    });
+  if (staleIds.length > 0) {
+    await supabase.from("PushSubscription").delete().in("id", staleIds);
   }
 
   const sent = results.filter((r) => r.status === "fulfilled").length;

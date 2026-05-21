@@ -4,7 +4,7 @@
 
 import { auth } from "@/auth";
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { supabase } from "@/lib/supabase";
 import type { ConnectedAccount } from "@/lib/types";
 
 function normaliseProvider(raw: string): ConnectedAccount["provider"] {
@@ -20,31 +20,29 @@ export async function GET(): Promise<NextResponse> {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const rows = await prisma.account.findMany({
-    where: { userId: session.user.id, isActive: true },
-    select: {
-      id: true,
-      userId: true,
-      provider: true,
-      email: true,
-      imapUser: true,
-      providerAccountId: true,
-      displayName: true,
-      color: true,
-      isActive: true,
-    },
-    orderBy: { createdAt: "asc" },
-  });
+  const { data: rows } = await supabase
+    .from("Account")
+    .select(
+      "id,userId,provider,email,imapUser,providerAccountId,displayName,color,isActive",
+    )
+    .eq("userId", session.user.id)
+    .eq("isActive", true)
+    .order("createdAt", { ascending: true });
 
-  const accounts: ConnectedAccount[] = rows.map((r) => ({
-    id: r.id,
-    userId: r.userId,
-    provider: normaliseProvider(r.provider),
-    email: r.email ?? r.imapUser ?? r.providerAccountId,
-    displayName: r.displayName ?? r.email ?? r.imapUser ?? r.providerAccountId,
-    color: r.color,
-    isActive: r.isActive,
-  }));
+  const accounts: ConnectedAccount[] = (rows ?? []).map(
+    (r: Record<string, unknown>) => ({
+      id: r.id as string,
+      userId: r.userId as string,
+      provider: normaliseProvider(r.provider as string),
+      email: (r.email ?? r.imapUser ?? r.providerAccountId) as string,
+      displayName: (r.displayName ??
+        r.email ??
+        r.imapUser ??
+        r.providerAccountId) as string,
+      color: r.color as string,
+      isActive: r.isActive as boolean,
+    }),
+  );
 
   return NextResponse.json(accounts);
 }

@@ -11,7 +11,7 @@
 import { auth } from "@/auth";
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { prisma } from "@/lib/prisma";
+import { supabase } from "@/lib/supabase";
 import { emailAI } from "@/lib/ai/email-ai";
 import { ValidationError, NotFoundError } from "@/lib/errors";
 
@@ -42,17 +42,28 @@ export async function POST(request: Request): Promise<NextResponse> {
     );
   }
 
-  const email = await prisma.cachedEmail.findFirst({
-    where: {
-      id: parsed.data.emailId,
-      account: { userId: session.user.id },
-    },
-  });
+  // Verify ownership
+  const { data: userAccounts } = await supabase
+    .from("Account")
+    .select("id")
+    .eq("userId", session.user.id);
+  const accountIds = (userAccounts ?? []).map(
+    (a: Record<string, unknown>) => a.id as string,
+  );
 
-  if (!email) {
+  const { data: emailRow } = await supabase
+    .from("CachedEmail")
+    .select("*")
+    .eq("id", parsed.data.emailId)
+    .in("accountId", accountIds)
+    .single();
+
+  if (!emailRow) {
     const err = new NotFoundError("Email", parsed.data.emailId);
     return NextResponse.json({ error: err.message }, { status: 404 });
   }
+
+  const email = emailRow as Record<string, unknown>;
 
   // Return cached summary if available
   if (email.aiSummary) {
@@ -60,24 +71,28 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   const result = await emailAI.summarizeEmail({
-    subject: email.subject,
-    from: { name: email.fromName, address: email.fromAddress },
-    textBody: email.bodyText,
-    body: email.bodyHtml,
-    receivedAt: email.receivedAt,
+    subject: email.subject as string,
+    from: {
+      name: email.fromName as string,
+      address: email.fromAddress as string,
+    },
+    textBody: email.bodyText as string | null | undefined,
+    body: email.bodyHtml as string | null | undefined,
+    receivedAt: new Date(email.receivedAt as string),
   });
 
   if (!result) {
     return NextResponse.json({ summary: "" });
   }
 
-  await prisma.cachedEmail.update({
-    where: { id: email.id },
-    data: {
+  await supabase
+    .from("CachedEmail")
+    .update({
       aiSummary: result.summary,
       aiActionItems: JSON.stringify(result.actionItems),
-    },
-  });
+      updatedAt: new Date().toISOString(),
+    })
+    .eq("id", email.id as string);
 
   return NextResponse.json({ summary: result.summary });
 }

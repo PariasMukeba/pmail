@@ -6,7 +6,7 @@
 import { auth } from "@/auth";
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { prisma } from "@/lib/prisma";
+import { supabase } from "@/lib/supabase";
 import { dbEmailToApiEmail } from "@/lib/inbox";
 import { getProviderAdapter } from "@/lib/sync";
 import { ValidationError, NotFoundError } from "@/lib/errors";
@@ -36,30 +36,39 @@ export async function GET(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const email = await prisma.cachedEmail.findFirst({
-    where: {
-      id: params.id,
-      account: { userId: session.user.id },
-    },
-  });
+  // Verify ownership: email must belong to one of the user's accounts
+  const { data: userAccounts } = await supabase
+    .from("Account")
+    .select("id")
+    .eq("userId", session.user.id);
+  const accountIds = (userAccounts ?? []).map(
+    (a: Record<string, unknown>) => a.id as string,
+  );
+
+  const { data: email } = await supabase
+    .from("CachedEmail")
+    .select("*")
+    .eq("id", params.id)
+    .in("accountId", accountIds)
+    .single();
 
   if (!email) {
     const err = new NotFoundError("Email", params.id);
     return NextResponse.json({ error: err.message }, { status: 404 });
   }
 
-  const threadMessages = await prisma.cachedEmail.findMany({
-    where: {
-      threadId: email.threadId,
-      accountId: email.accountId,
-      account: { userId: session.user.id },
-    },
-    orderBy: { date: "asc" },
-  });
+  const row = email as Record<string, unknown>;
+
+  const { data: threadMessages } = await supabase
+    .from("CachedEmail")
+    .select("*")
+    .eq("threadId", row.threadId as string)
+    .eq("accountId", row.accountId as string)
+    .order("date", { ascending: true });
 
   return NextResponse.json({
-    email: dbEmailToApiEmail(email),
-    thread: threadMessages.map(dbEmailToApiEmail),
+    email: dbEmailToApiEmail(row),
+    thread: (threadMessages ?? []).map((m) => dbEmailToApiEmail(m)),
   });
 }
 
@@ -82,52 +91,100 @@ export async function PATCH(
     const err = new ValidationError("Invalid request body", {
       issues: parsed.error.flatten(),
     });
-    return NextResponse.json({ error: err.message, details: parsed.error.flatten() }, { status: 400 });
+    return NextResponse.json(
+      { error: err.message, details: parsed.error.flatten() },
+      { status: 400 },
+    );
   }
 
-  const email = await prisma.cachedEmail.findFirst({
-    where: {
-      id: params.id,
-      account: { userId: session.user.id },
-    },
-    include: { account: true },
-  });
+  // Verify ownership
+  const { data: userAccounts } = await supabase
+    .from("Account")
+    .select("id")
+    .eq("userId", session.user.id);
+  const accountIds = (userAccounts ?? []).map(
+    (a: Record<string, unknown>) => a.id as string,
+  );
+
+  const { data: email } = await supabase
+    .from("CachedEmail")
+    .select("*")
+    .eq("id", params.id)
+    .in("accountId", accountIds)
+    .single();
 
   if (!email) {
     const err = new NotFoundError("Email", params.id);
     return NextResponse.json({ error: err.message }, { status: 404 });
   }
 
+  const row = email as Record<string, unknown>;
+
+  // Fetch the account for provider adapter calls
+  const { data: account } = await supabase
+    .from("Account")
+    .select("provider")
+    .eq("id", row.accountId as string)
+    .single();
+  const acct = account as Record<string, unknown> | null;
+
   const { isRead, isStarred, labels, archived, trashed } = parsed.data;
 
-  // Mirror changes to provider adapter
-  try {
-    const adapter = await getProviderAdapter(email.account.provider);
-
-    if (isRead === true) {
-      await adapter.markRead(email.accountId, [email.messageId]);
+  // Mirror changes to provider adapter (non-fatal)
+  if (acct) {
+    try {
+      const adapter = await getProviderAdapter(acct.provider as string);
+      if (isRead === true)
+        await adapter.markRead(row.accountId as string, [
+          row.messageId as string,
+        ]);
+      if (archived === true)
+        await adapter.archive(row.accountId as string, [
+          row.messageId as string,
+        ]);
+      if (trashed === true)
+        await adapter.trash(row.accountId as string, [row.messageId as string]);
+      if (labels && labels.length > 0) {
+        await adapter.applyLabel(
+          row.accountId as string,
+          [row.messageId as string],
+          labels[0],
+        );
+      }
+    } catch {
+      // Provider errors are non-fatal
     }
-    if (archived === true) {
-      await adapter.archive(email.accountId, [email.messageId]);
-    }
-    if (trashed === true) {
-      await adapter.trash(email.accountId, [email.messageId]);
-    }
-    if (labels && labels.length > 0) {
-      await adapter.applyLabel(email.accountId, [email.messageId], labels[0]);
-    }
-  } catch {
-    // Provider errors are non-fatal — we still update the local DB cache
   }
 
-  const updated = await prisma.cachedEmail.update({
-    where: { id: params.id },
-    data: {
-      ...(isRead !== undefined && { isRead }),
-      ...(isStarred !== undefined && { isStarred }),
-      ...(labels !== undefined && { labels: JSON.stringify(labels) }),
-    },
-  });
+  const updateData: Record<string, unknown> = {
+    updatedAt: new Date().toISOString(),
+  };
+  if (isRead !== undefined) updateData.isRead = isRead;
+  if (isStarred !== undefined) updateData.isStarred = isStarred;
+  if (labels !== undefined) updateData.labels = JSON.stringify(labels);
 
-  return NextResponse.json({ email: dbEmailToApiEmail(updated) });
+  if (archived === true || trashed === true) {
+    let current: string[] = [];
+    try {
+      current = JSON.parse(row.labels as string) as string[];
+    } catch {
+      current = [];
+    }
+    const withoutInbox = current.filter((l) => l !== "inbox");
+    const next = archived
+      ? [...new Set([...withoutInbox, "archived"])]
+      : [...new Set([...withoutInbox, "trash"])];
+    updateData.labels = JSON.stringify(next);
+  }
+
+  const { data: updated } = await supabase
+    .from("CachedEmail")
+    .update(updateData)
+    .eq("id", params.id)
+    .select("*")
+    .single();
+
+  return NextResponse.json({
+    email: dbEmailToApiEmail(updated as Record<string, unknown>),
+  });
 }

@@ -8,7 +8,7 @@
  * Non-negotiable: never log email content, subjects, or sender addresses.
  */
 
-import { prisma } from "@/lib/prisma";
+import { supabase } from "@/lib/supabase";
 import { AuthError, SyncError, SendError } from "@/lib/errors";
 import type {
   EmailProvider,
@@ -83,7 +83,6 @@ interface GmailAttachment {
   data: string;
 }
 
-
 // ---------------------------------------------------------------------------
 // OAuth token refresh
 // ---------------------------------------------------------------------------
@@ -95,8 +94,13 @@ interface GmailAttachment {
  * @throws AuthError if the refresh token is missing or the request fails.
  */
 async function refreshAccessToken(accountId: string): Promise<string> {
-  const account = await prisma.account.findUnique({ where: { id: accountId } });
-  if (!account?.refresh_token) {
+  const { data: account } = await supabase
+    .from("Account")
+    .select("*")
+    .eq("id", accountId)
+    .single();
+  const acct = account as Record<string, unknown> | null;
+  if (!acct?.refresh_token) {
     throw new AuthError("gmail", "No refresh token available");
   }
 
@@ -109,7 +113,7 @@ async function refreshAccessToken(accountId: string): Promise<string> {
   const body = new URLSearchParams({
     client_id: clientId,
     client_secret: clientSecret,
-    refresh_token: account.refresh_token,
+    refresh_token: acct.refresh_token as string,
     grant_type: "refresh_token",
   });
 
@@ -120,7 +124,10 @@ async function refreshAccessToken(accountId: string): Promise<string> {
   });
 
   if (!res.ok) {
-    throw new AuthError("gmail", `Token refresh failed with status ${res.status}`);
+    throw new AuthError(
+      "gmail",
+      `Token refresh failed with status ${res.status}`,
+    );
   }
 
   const data = (await res.json()) as {
@@ -129,10 +136,14 @@ async function refreshAccessToken(accountId: string): Promise<string> {
   };
 
   const expiresAt = Math.floor(Date.now() / 1000) + data.expires_in;
-  await prisma.account.update({
-    where: { id: accountId },
-    data: { access_token: data.access_token, expires_at: expiresAt },
-  });
+  await supabase
+    .from("Account")
+    .update({
+      access_token: data.access_token,
+      expires_at: expiresAt,
+      updatedAt: new Date().toISOString(),
+    })
+    .eq("id", accountId);
 
   return data.access_token;
 }
@@ -150,18 +161,21 @@ async function gmailFetch(
   options: RequestInit = {},
 ): Promise<Response> {
   const getToken = async (): Promise<string> => {
-    const account = await prisma.account.findUnique({
-      where: { id: accountId },
-    });
-    if (!account?.access_token) {
+    const { data: account } = await supabase
+      .from("Account")
+      .select("access_token,expires_at")
+      .eq("id", accountId)
+      .single();
+    const acct = account as Record<string, unknown> | null;
+    if (!acct?.access_token) {
       return refreshAccessToken(accountId);
     }
     // Refresh proactively if token expires within 60 seconds
-    const expiresAt = account.expires_at ?? 0;
+    const expiresAt = (acct.expires_at as number) ?? 0;
     if (expiresAt - Math.floor(Date.now() / 1000) < 60) {
       return refreshAccessToken(accountId);
     }
-    return account.access_token;
+    return acct.access_token as string;
   };
 
   const token = await getToken();
@@ -200,9 +214,10 @@ function decodeBase64Url(str: string): string {
  * body content. Prefers the last part found of each type (handles
  * multipart/alternative correctly).
  */
-function extractBodies(
-  payload: GmailPayload | GmailPart,
-): { text?: string; html?: string } {
+function extractBodies(payload: GmailPayload | GmailPart): {
+  text?: string;
+  html?: string;
+} {
   const { mimeType, body, parts } = payload;
   let text: string | undefined;
   let html: string | undefined;
@@ -278,7 +293,9 @@ function parseGmailMessage(msg: GmailMessage, _accountId: string): EmailData {
   const references = getHeader(headers, "References") || undefined;
 
   // Parse "Display Name <email@example.com>" or "email@example.com"
-  const parseAddress = (raw: string): Array<{ name: string; address: string }> => {
+  const parseAddress = (
+    raw: string,
+  ): Array<{ name: string; address: string }> => {
     return raw
       .split(/,(?=(?:[^"]*"[^"]*")*[^"]*$)/)
       .map((part) => part.trim())
@@ -286,7 +303,10 @@ function parseGmailMessage(msg: GmailMessage, _accountId: string): EmailData {
       .map((part) => {
         const match = part.match(/^(?:"?([^"<]*?)"?\s*)?<?([^>]+)>?$/);
         if (match) {
-          return { name: (match[1] ?? "").trim(), address: (match[2] ?? "").trim() };
+          return {
+            name: (match[1] ?? "").trim(),
+            address: (match[2] ?? "").trim(),
+          };
         }
         return { name: "", address: part.trim() };
       });
@@ -351,7 +371,11 @@ function parseGmailMessage(msg: GmailMessage, _accountId: string): EmailData {
  */
 function toBase64Url(input: string | Buffer): string {
   const buf = Buffer.isBuffer(input) ? input : Buffer.from(input, "utf-8");
-  return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return buf
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
 }
 
 /**
@@ -382,7 +406,9 @@ function buildRfc2822(draft: DraftData, messageId?: string): string {
     lines.push(`References: ${messageId}`);
   }
 
-  lines.push(`Subject: =?UTF-8?B?${Buffer.from(draft.subject, "utf-8").toString("base64")}?=`);
+  lines.push(
+    `Subject: =?UTF-8?B?${Buffer.from(draft.subject, "utf-8").toString("base64")}?=`,
+  );
   lines.push("MIME-Version: 1.0");
 
   if (!draft.attachments || draft.attachments.length === 0) {
@@ -391,7 +417,7 @@ function buildRfc2822(draft: DraftData, messageId?: string): string {
     lines.push("");
     lines.push(Buffer.from(draft.body, "utf-8").toString("base64"));
   } else {
-    const boundary = `aire_${Date.now()}_boundary`;
+    const boundary = `pmail_${Date.now()}_boundary`;
     lines.push(`Content-Type: multipart/mixed; boundary="${boundary}"`);
     lines.push("");
     lines.push(`--${boundary}`);
@@ -449,7 +475,11 @@ export const gmailAdapter: EmailProvider = {
     );
     if (!listRes.ok) {
       const errBody = await listRes.text().catch(() => "");
-      throw new SyncError(accountId, "gmail", `List messages failed: ${listRes.status} — ${errBody}`);
+      throw new SyncError(
+        accountId,
+        "gmail",
+        `List messages failed: ${listRes.status} — ${errBody}`,
+      );
     }
 
     const listData = (await listRes.json()) as GmailListResponse;
@@ -473,12 +503,18 @@ export const gmailAdapter: EmailProvider = {
           `/users/me/messages/${ref.id}?format=FULL`,
         );
         if (!res.ok) {
-          throw new SyncError(accountId, "gmail", `Get message ${ref.id} failed: ${res.status}`);
+          throw new SyncError(
+            accountId,
+            "gmail",
+            `Get message ${ref.id} failed: ${res.status}`,
+          );
         }
         messages[i] = (await res.json()) as GmailMessage;
       }
     }
-    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, messageRefs.length) }, worker));
+    await Promise.all(
+      Array.from({ length: Math.min(CONCURRENCY, messageRefs.length) }, worker),
+    );
 
     const emails = messages.map((msg) => parseGmailMessage(msg, accountId));
 
@@ -497,16 +533,17 @@ export const gmailAdapter: EmailProvider = {
    *
    * @throws SyncError on non-2xx response.
    */
-  async fetchThread(
-    accountId: string,
-    threadId: string,
-  ): Promise<EmailData[]> {
+  async fetchThread(accountId: string, threadId: string): Promise<EmailData[]> {
     const res = await gmailFetch(
       accountId,
       `/users/me/threads/${threadId}?format=FULL`,
     );
     if (!res.ok) {
-      throw new SyncError(accountId, "gmail", `Fetch thread failed: ${res.status}`);
+      throw new SyncError(
+        accountId,
+        "gmail",
+        `Fetch thread failed: ${res.status}`,
+      );
     }
 
     const thread = (await res.json()) as GmailThread;
@@ -623,7 +660,11 @@ export const gmailAdapter: EmailProvider = {
       }),
     });
     if (!res.ok) {
-      throw new SyncError(accountId, "gmail", `applyLabel failed: ${res.status}`);
+      throw new SyncError(
+        accountId,
+        "gmail",
+        `applyLabel failed: ${res.status}`,
+      );
     }
   },
 
@@ -634,10 +675,7 @@ export const gmailAdapter: EmailProvider = {
    *
    * @throws SendError on non-2xx response.
    */
-  async sendEmail(
-    accountId: string,
-    draft: DraftData,
-  ): Promise<SentResult> {
+  async sendEmail(accountId: string, draft: DraftData): Promise<SentResult> {
     let inReplyToHeader: string | undefined;
 
     if (draft.inReplyToId) {
@@ -648,10 +686,7 @@ export const gmailAdapter: EmailProvider = {
       );
       if (origRes.ok) {
         const orig = (await origRes.json()) as GmailMessage;
-        inReplyToHeader = getHeader(
-          orig.payload?.headers ?? [],
-          "Message-ID",
-        );
+        inReplyToHeader = getHeader(orig.payload?.headers ?? [], "Message-ID");
       }
     }
 

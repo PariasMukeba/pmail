@@ -1,13 +1,13 @@
 import NextAuth from "next-auth";
-import { PrismaAdapter } from "@auth/prisma-adapter";
 import Google from "next-auth/providers/google";
 import MicrosoftEntraID from "next-auth/providers/microsoft-entra-id";
 import Credentials from "next-auth/providers/credentials";
-import { prisma } from "@/lib/prisma";
+import { SupabaseAdapter } from "@/lib/supabase-auth-adapter";
+import { supabase } from "@/lib/supabase";
 import { encryptImapPassword } from "@/lib/skills/crypto/encrypt-imap-password";
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
-  adapter: PrismaAdapter(prisma),
+  adapter: SupabaseAdapter(),
   secret: process.env.AUTH_SECRET ?? process.env.NEXTAUTH_SECRET,
   session: { strategy: "jwt" },
   pages: {
@@ -57,7 +57,6 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           ) {
             return null;
           }
-
           const { verifyImapConnection } = await import("@/lib/sync/imap");
           const isValid = await verifyImapConnection({
             host: credentials.imapHost as string,
@@ -65,35 +64,60 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
             user: credentials.email as string,
             password: credentials.password as string,
           });
-
           if (!isValid) return null;
 
           const encrypted = JSON.stringify(
             encryptImapPassword(credentials.password as string),
           );
 
-          const user = await prisma.user.upsert({
-            where: { email: credentials.email as string },
-            update: {},
-            create: { email: credentials.email as string },
-          });
+          // Upsert user
+          const { data: existingUser } = await supabase
+            .from("User")
+            .select()
+            .eq("email", credentials.email as string)
+            .single();
 
-          await prisma.account.upsert({
-            where: {
-              provider_providerAccountId: {
-                provider: "imap",
-                providerAccountId: credentials.email as string,
-              },
-            },
-            update: {
-              imapPasswordEncrypted: encrypted,
-              imapHost: credentials.imapHost as string,
-              imapPort: Number(credentials.imapPort) || 993,
-              smtpHost: (credentials.smtpHost as string) || "",
-              smtpPort: Number(credentials.smtpPort) || 587,
-            },
-            create: {
-              userId: user.id,
+          let userId: string;
+          if (existingUser) {
+            userId = existingUser.id as string;
+          } else {
+            const id = crypto.randomUUID();
+            const now = new Date().toISOString();
+            await supabase.from("User").insert({
+              id,
+              email: credentials.email,
+              createdAt: now,
+              updatedAt: now,
+            });
+            userId = id;
+          }
+
+          // Upsert IMAP account
+          const now = new Date().toISOString();
+          const { data: existingAccount } = await supabase
+            .from("Account")
+            .select()
+            .eq("provider", "imap")
+            .eq("providerAccountId", credentials.email as string)
+            .single();
+
+          if (existingAccount) {
+            await supabase
+              .from("Account")
+              .update({
+                imapPasswordEncrypted: encrypted,
+                imapHost: credentials.imapHost,
+                imapPort: Number(credentials.imapPort) || 993,
+                smtpHost: (credentials.smtpHost as string) || "",
+                smtpPort: Number(credentials.smtpPort) || 587,
+                updatedAt: now,
+              })
+              .eq("id", existingAccount.id);
+          } else {
+            await supabase.from("Account").insert({
+              id: crypto.randomUUID(),
+              userId,
+              type: "credentials",
               provider: "imap",
               providerAccountId: credentials.email as string,
               email: credentials.email as string,
@@ -103,13 +127,15 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
               imapPort: Number(credentials.imapPort) || 993,
               smtpHost: (credentials.smtpHost as string) || "",
               smtpPort: Number(credentials.smtpPort) || 587,
-            },
-          });
+              color: "#6366F1",
+              isActive: true,
+              createdAt: now,
+              updatedAt: now,
+            });
+          }
 
-          return { id: user.id, email: user.email, name: user.name };
+          return { id: userId, email: credentials.email as string };
         } catch {
-          // Return null so NextAuth shows the signin page with an error query param
-          // rather than crashing to the error page.
           return null;
         }
       },
@@ -117,15 +143,15 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   ],
   callbacks: {
     async signIn({ user, account }) {
-      // PrismaAdapter doesn't populate the email column on Account — patch it.
       if (account && user.email && account.type === "oauth") {
         try {
-          await prisma.account.updateMany({
-            where: { providerAccountId: account.providerAccountId, provider: account.provider },
-            data: { email: user.email },
-          });
+          await supabase
+            .from("Account")
+            .update({ email: user.email, updatedAt: new Date().toISOString() })
+            .eq("provider", account.provider)
+            .eq("providerAccountId", account.providerAccountId);
         } catch {
-          // Non-fatal — sign-in still proceeds
+          /* non-fatal */
         }
       }
       return true;
@@ -136,9 +162,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         token.refreshToken = account.refresh_token;
         token.provider = account.provider;
       }
-      if (user) {
-        token.userId = user.id;
-      }
+      if (user) token.userId = user.id;
       return token;
     },
     async session({ session, token }) {

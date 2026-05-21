@@ -9,7 +9,7 @@
  * Non-negotiable: never log email content, subjects, or sender addresses.
  */
 
-import { prisma } from "@/lib/prisma";
+import { supabase } from "@/lib/supabase";
 import { AuthError, SyncError, SendError } from "@/lib/errors";
 import type {
   EmailProvider,
@@ -21,7 +21,8 @@ import type {
 } from "./types";
 
 const GRAPH_API = "https://graph.microsoft.com/v1.0";
-const MS_TOKEN_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token";
+const MS_TOKEN_URL =
+  "https://login.microsoftonline.com/common/oauth2/v2.0/token";
 
 // ---------------------------------------------------------------------------
 // Internal Microsoft Graph shape definitions
@@ -92,23 +93,32 @@ interface GraphAttachment {
  * @throws AuthError if the refresh token is missing or the request fails.
  */
 async function refreshMicrosoftToken(accountId: string): Promise<string> {
-  const account = await prisma.account.findUnique({ where: { id: accountId } });
-  if (!account?.refresh_token) {
+  const { data: account } = await supabase
+    .from("Account")
+    .select("*")
+    .eq("id", accountId)
+    .single();
+  const acct = account as Record<string, unknown> | null;
+  if (!acct?.refresh_token) {
     throw new AuthError("office365", "No refresh token available");
   }
 
   const clientId = process.env.MICROSOFT_CLIENT_ID;
   const clientSecret = process.env.MICROSOFT_CLIENT_SECRET;
   if (!clientId || !clientSecret) {
-    throw new AuthError("office365", "Microsoft OAuth credentials not configured");
+    throw new AuthError(
+      "office365",
+      "Microsoft OAuth credentials not configured",
+    );
   }
 
   const body = new URLSearchParams({
     client_id: clientId,
     client_secret: clientSecret,
-    refresh_token: account.refresh_token,
+    refresh_token: acct.refresh_token as string,
     grant_type: "refresh_token",
-    scope: "https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/Mail.Send offline_access",
+    scope:
+      "https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/Mail.Send offline_access",
   });
 
   const res = await fetch(MS_TOKEN_URL, {
@@ -130,10 +140,14 @@ async function refreshMicrosoftToken(accountId: string): Promise<string> {
   };
 
   const expiresAt = Math.floor(Date.now() / 1000) + data.expires_in;
-  await prisma.account.update({
-    where: { id: accountId },
-    data: { access_token: data.access_token, expires_at: expiresAt },
-  });
+  await supabase
+    .from("Account")
+    .update({
+      access_token: data.access_token,
+      expires_at: expiresAt,
+      updatedAt: new Date().toISOString(),
+    })
+    .eq("id", accountId);
 
   return data.access_token;
 }
@@ -151,17 +165,20 @@ async function graphFetch(
   options: RequestInit = {},
 ): Promise<Response> {
   const getToken = async (): Promise<string> => {
-    const account = await prisma.account.findUnique({
-      where: { id: accountId },
-    });
-    if (!account?.access_token) {
+    const { data: account } = await supabase
+      .from("Account")
+      .select("access_token,expires_at")
+      .eq("id", accountId)
+      .single();
+    const acct = account as Record<string, unknown> | null;
+    if (!acct?.access_token) {
       return refreshMicrosoftToken(accountId);
     }
-    const expiresAt = account.expires_at ?? 0;
+    const expiresAt = (acct.expires_at as number) ?? 0;
     if (expiresAt - Math.floor(Date.now() / 1000) < 60) {
       return refreshMicrosoftToken(accountId);
     }
-    return account.access_token;
+    return acct.access_token as string;
   };
 
   const token = await getToken();
@@ -217,13 +234,14 @@ function parseGraphMessage(msg: GraphMessage): EmailData {
   const date = msg.receivedDateTime
     ? new Date(msg.receivedDateTime)
     : msg.sentDateTime
-    ? new Date(msg.sentDateTime)
-    : new Date();
+      ? new Date(msg.sentDateTime)
+      : new Date();
 
   const labels: string[] = [];
   if (!msg.isDraft) labels.push("inbox");
   if (msg.isDraft) labels.push("draft");
-  if (msg.categories) labels.push(...msg.categories.map((c) => c.toLowerCase()));
+  if (msg.categories)
+    labels.push(...msg.categories.map((c) => c.toLowerCase()));
 
   return {
     messageId: msg.id,
@@ -295,12 +313,15 @@ export const microsoftAdapter: EmailProvider = {
 
     if (options.incremental) {
       // Retrieve stored delta link for this account
-      const syncState = await prisma.syncState.findUnique({
-        where: { accountId },
-      });
-      if (syncState?.deltaLink) {
+      const { data: syncState } = await supabase
+        .from("SyncState")
+        .select("deltaLink")
+        .eq("accountId", accountId)
+        .single();
+      const ss = syncState as Record<string, unknown> | null;
+      if (ss?.deltaLink) {
         // Use the stored delta link directly — it encodes all query params
-        url = syncState.deltaLink;
+        url = ss.deltaLink as string;
       } else {
         // Bootstrap delta sync from scratch
         url = `${GRAPH_API}/me/mailFolders/inbox/messages/delta?$select=${MESSAGE_SELECT}&$top=${top}`;
@@ -348,10 +369,7 @@ export const microsoftAdapter: EmailProvider = {
    *
    * @throws SyncError on non-2xx response.
    */
-  async fetchThread(
-    accountId: string,
-    threadId: string,
-  ): Promise<EmailData[]> {
+  async fetchThread(accountId: string, threadId: string): Promise<EmailData[]> {
     const params = new URLSearchParams({
       $select: MESSAGE_SELECT,
       $filter: `conversationId eq '${threadId}'`,
@@ -497,7 +515,8 @@ export const microsoftAdapter: EmailProvider = {
           `/me/messages/${id}?$select=categories`,
         );
         const existing: string[] = getRes.ok
-          ? ((await getRes.json()) as { categories?: string[] }).categories ?? []
+          ? (((await getRes.json()) as { categories?: string[] }).categories ??
+            [])
           : [];
 
         if (!existing.includes(labelId)) {
@@ -525,10 +544,7 @@ export const microsoftAdapter: EmailProvider = {
    *
    * @throws SendError on non-2xx response.
    */
-  async sendEmail(
-    accountId: string,
-    draft: DraftData,
-  ): Promise<SentResult> {
+  async sendEmail(accountId: string, draft: DraftData): Promise<SentResult> {
     const mapAddrs = (
       list?: Array<{ name: string; address: string }>,
     ): GraphRecipient[] =>
@@ -577,7 +593,10 @@ export const microsoftAdapter: EmailProvider = {
         );
       }
 
-      const replyDraft = (await replyDraftRes.json()) as { id: string; conversationId: string };
+      const replyDraft = (await replyDraftRes.json()) as {
+        id: string;
+        conversationId: string;
+      };
 
       const sendRes = await graphFetch(
         accountId,

@@ -8,7 +8,7 @@
 import { auth } from "@/auth";
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { prisma } from "@/lib/prisma";
+import { supabase } from "@/lib/supabase";
 import { ValidationError } from "@/lib/errors";
 
 const subscribeSchema = z.object({
@@ -41,19 +41,16 @@ export async function POST(request: Request): Promise<NextResponse> {
     );
   }
 
-  await prisma.pushSubscription.upsert({
-    where: { endpoint: parsed.data.endpoint },
-    create: {
+  await supabase.from("PushSubscription").upsert(
+    {
       userId: session.user.id,
       endpoint: parsed.data.endpoint,
       p256dh: parsed.data.keys.p256dh,
       auth: parsed.data.keys.auth,
+      createdAt: new Date().toISOString(),
     },
-    update: {
-      p256dh: parsed.data.keys.p256dh,
-      auth: parsed.data.keys.auth,
-    },
-  });
+    { onConflict: "endpoint" },
+  );
 
   return NextResponse.json({ ok: true }, { status: 201 });
 }

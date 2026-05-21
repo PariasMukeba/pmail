@@ -1,120 +1,203 @@
 /**
- * POST /api/sync/all — sync all connected accounts for the current user.
+ * POST /api/sync/all — sync all connected accounts, streaming progress as SSE.
  *
- * Runs each account's sync in parallel and returns an aggregated result.
+ * Emits one `email` event per email written to the DB (sorted newest-first),
+ * so the inbox can update progressively. Ends with a `done` event.
+ *
+ * Event shapes:
+ *   { type: "email",  count: number, accountId: string }
+ *   { type: "error",  error: string, accountId: string }
+ *   { type: "done",   synced: number, errors: string[] }
  */
 
 import { auth } from "@/auth";
-import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { supabase } from "@/lib/supabase";
 import { getProviderAdapter } from "@/lib/sync";
 import { SyncError } from "@/lib/errors";
 import { MAX_EMAILS_PER_SYNC } from "@/lib/constants";
+import type { EmailData } from "@/lib/sync/types";
 
-/** Allow up to 60 seconds for this route. */
+/** Allow up to 60 seconds for this streaming route. */
 export const maxDuration = 60;
 
-interface AccountSyncResult {
-  accountId: string;
-  synced: number;
-  error?: string;
+/** Encode a single SSE frame. */
+function sseFrame(data: object): Uint8Array {
+  return new TextEncoder().encode(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+/** Upsert one email into CachedEmail. Returns an error string on failure. */
+async function writeEmail(
+  accountId: string,
+  email: EmailData,
+): Promise<string | null> {
+  const { error } = await supabase.from("CachedEmail").upsert(
+    {
+      accountId,
+      messageId: email.messageId,
+      threadId: email.threadId,
+      subject: email.subject,
+      fromName: email.fromName,
+      fromAddress: email.fromAddress,
+      toAddresses: email.toAddresses,
+      ccAddresses: email.ccAddresses,
+      preview: email.preview,
+      bodyText: email.bodyText ?? null,
+      bodyHtml: email.bodyHtml ?? null,
+      rawMime: email.rawMime ?? null,
+      date: email.date instanceof Date ? email.date.toISOString() : email.date,
+      isRead: email.isRead,
+      isStarred: email.isStarred,
+      isDraft: email.isDraft,
+      labels: email.labels,
+      hasAttachments: email.hasAttachments,
+      inReplyTo: email.inReplyTo ?? null,
+      references: email.references ?? null,
+      updatedAt: new Date().toISOString(),
+    },
+    { onConflict: "accountId,messageId" },
+  );
+  return error ? error.message : null;
 }
 
 /**
  * POST /api/sync/all
- * Syncs all accounts belonging to the authenticated user in parallel.
+ * Returns a Server-Sent Event stream. Emails are written newest-first so the
+ * inbox fills up in reverse chronological order from the first event.
  */
-export async function POST(_request: Request): Promise<NextResponse> {
+export async function POST(_request: Request): Promise<Response> {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return new Response(JSON.stringify({ error: "Unauthorized" }), {
+      status: 401,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 
-  const accounts = await prisma.account.findMany({
-    where: { userId: session.user.id, isActive: true },
-    include: { syncState: true },
-  });
+  const userId = session.user.id;
 
-  const results = await Promise.all(
-    accounts.map(async (account): Promise<AccountSyncResult> => {
-      try {
-        const adapter = await getProviderAdapter(account.provider);
+  // Load accounts + existing sync states before opening the stream
+  const { data: accountRows } = await supabase
+    .from("Account")
+    .select("*")
+    .eq("userId", userId)
+    .eq("isActive", true);
 
-        const result = await adapter.fetchEmails(account.id, {
-          incremental:
-            !!account.syncState?.historyId ||
-            !!account.syncState?.deltaLink,
-          maxResults: MAX_EMAILS_PER_SYNC,
-          pageToken: account.syncState?.nextPageToken ?? undefined,
-        });
+  const accounts = (accountRows ?? []) as Record<string, unknown>[];
+  if (accounts.length === 0) {
+    return new Response(
+      `data: ${JSON.stringify({ type: "done", synced: 0, errors: [] })}\n\n`,
+      {
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+        },
+      },
+    );
+  }
 
-        let synced = 0;
-        for (const email of result.emails) {
-          await prisma.cachedEmail.upsert({
-            where: {
-              accountId_messageId: {
-                accountId: account.id,
-                messageId: email.messageId,
-              },
-            },
-            create: {
-              accountId: account.id,
-              messageId: email.messageId,
-              threadId: email.threadId,
-              subject: email.subject,
-              fromName: email.fromName,
-              fromAddress: email.fromAddress,
-              toAddresses: email.toAddresses,
-              ccAddresses: email.ccAddresses,
-              preview: email.preview,
-              bodyText: email.bodyText,
-              bodyHtml: email.bodyHtml,
-              rawMime: email.rawMime,
-              date: email.date,
-              isRead: email.isRead,
-              isStarred: email.isStarred,
-              isDraft: email.isDraft,
-              labels: email.labels,
-              hasAttachments: email.hasAttachments,
-              inReplyTo: email.inReplyTo,
-              references: email.references,
-            },
-            update: {
-              isRead: email.isRead,
-              isStarred: email.isStarred,
-              labels: email.labels,
-            },
-          });
-          synced++;
-        }
+  const accountIds = accounts.map((a) => a.id as string);
+  const { data: syncStateRows } = await supabase
+    .from("SyncState")
+    .select("*")
+    .in("accountId", accountIds);
 
-        await prisma.syncState.upsert({
-          where: { accountId: account.id },
-          create: {
-            accountId: account.id,
-            lastSyncedAt: new Date(),
-            nextPageToken: result.nextPageToken ?? null,
-            historyId: result.historyId ?? null,
-            deltaLink: result.deltaLink ?? null,
-          },
-          update: {
-            lastSyncedAt: new Date(),
-            nextPageToken: result.nextPageToken ?? null,
-            ...(result.historyId && { historyId: result.historyId }),
-            ...(result.deltaLink && { deltaLink: result.deltaLink }),
-          },
-        });
-
-        return { accountId: account.id, synced };
-      } catch (err) {
-        const syncErr =
-          err instanceof SyncError
-            ? err
-            : new SyncError(account.id, account.provider, String(err));
-        return { accountId: account.id, synced: 0, error: syncErr.message };
-      }
-    }),
+  const syncStateMap = Object.fromEntries(
+    (syncStateRows ?? []).map((s: Record<string, unknown>) => [
+      s.accountId as string,
+      s,
+    ]),
   );
 
-  return NextResponse.json({ results });
+  const stream = new ReadableStream({
+    async start(controller) {
+      let totalSynced = 0;
+      const errors: string[] = [];
+
+      for (const account of accounts) {
+        const ss = syncStateMap[account.id as string] as
+          | Record<string, unknown>
+          | undefined;
+
+        try {
+          const adapter = await getProviderAdapter(account.provider as string);
+
+          const result = await adapter.fetchEmails(account.id as string, {
+            incremental: !!(ss?.historyId || ss?.deltaLink),
+            maxResults: MAX_EMAILS_PER_SYNC,
+            pageToken: (ss?.nextPageToken as string) ?? undefined,
+          });
+
+          // Sort newest-first so the inbox fills top-down as events arrive
+          const sorted = [...result.emails].sort((a, b) => {
+            const ta =
+              a.date instanceof Date
+                ? a.date.getTime()
+                : new Date(a.date as string).getTime();
+            const tb =
+              b.date instanceof Date
+                ? b.date.getTime()
+                : new Date(b.date as string).getTime();
+            return tb - ta;
+          });
+
+          for (const email of sorted) {
+            const writeErr = await writeEmail(account.id as string, email);
+            if (writeErr) {
+              errors.push(writeErr);
+              controller.enqueue(
+                sseFrame({
+                  type: "error",
+                  error: writeErr,
+                  accountId: account.id,
+                }),
+              );
+            } else {
+              totalSynced++;
+              controller.enqueue(
+                sseFrame({
+                  type: "email",
+                  count: totalSynced,
+                  accountId: account.id,
+                }),
+              );
+            }
+          }
+
+          const { error: ssErr } = await supabase.from("SyncState").upsert(
+            {
+              accountId: account.id,
+              lastSyncedAt: new Date().toISOString(),
+              nextPageToken: result.nextPageToken ?? null,
+              historyId: result.historyId ?? ss?.historyId ?? null,
+              deltaLink: result.deltaLink ?? ss?.deltaLink ?? null,
+              updatedAt: new Date().toISOString(),
+            },
+            { onConflict: "accountId" },
+          );
+          if (ssErr) {
+            errors.push(`SyncState: ${ssErr.message}`);
+          }
+        } catch (err) {
+          const msg = err instanceof SyncError ? err.message : String(err);
+          errors.push(msg);
+          controller.enqueue(
+            sseFrame({ type: "error", error: msg, accountId: account.id }),
+          );
+        }
+      }
+
+      controller.enqueue(
+        sseFrame({ type: "done", synced: totalSynced, errors }),
+      );
+      controller.close();
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    },
+  });
 }

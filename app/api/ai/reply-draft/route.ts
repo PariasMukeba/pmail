@@ -10,7 +10,7 @@
 
 import { auth } from "@/auth";
 import { z } from "zod";
-import { prisma } from "@/lib/prisma";
+import { supabase } from "@/lib/supabase";
 import { emailAI } from "@/lib/ai/email-ai";
 import { ValidationError, NotFoundError } from "@/lib/errors";
 
@@ -44,37 +44,49 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
-  const email = await prisma.cachedEmail.findFirst({
-    where: {
-      id: parsed.data.emailId,
-      account: { userId: session.user.id },
-    },
-  });
+  // Verify ownership
+  const { data: userAccounts } = await supabase
+    .from("Account")
+    .select("id")
+    .eq("userId", session.user.id);
+  const accountIds = (userAccounts ?? []).map(
+    (a: Record<string, unknown>) => a.id as string,
+  );
 
-  if (!email) {
+  const { data: emailRow } = await supabase
+    .from("CachedEmail")
+    .select("*")
+    .eq("id", parsed.data.emailId)
+    .in("accountId", accountIds)
+    .single();
+
+  if (!emailRow) {
     const err = new NotFoundError("Email", parsed.data.emailId);
     return Response.json({ error: err.message }, { status: 404 });
   }
 
-  // Fetch last N thread messages for context
-  const threadMessages = await prisma.cachedEmail.findMany({
-    where: {
-      threadId: email.threadId,
-      accountId: email.accountId,
-    },
-    orderBy: { date: "desc" },
-    take: THREAD_CONTEXT_LIMIT,
-  });
+  const email = emailRow as Record<string, unknown>;
 
-  const messagesForAI = threadMessages
+  // Fetch last N thread messages for context
+  const { data: threadRows } = await supabase
+    .from("CachedEmail")
+    .select("fromAddress,bodyText,bodyHtml,receivedAt")
+    .eq("threadId", email.threadId as string)
+    .eq("accountId", email.accountId as string)
+    .order("date", { ascending: false })
+    .limit(THREAD_CONTEXT_LIMIT);
+
+  const messagesForAI = ((threadRows ?? []) as Record<string, unknown>[])
     .reverse()
     .map((msg) => ({
-      from: msg.fromAddress,
-      textBody: msg.bodyText ?? msg.bodyHtml?.replace(/<[^>]+>/g, " ") ?? null,
-      receivedAt: msg.receivedAt,
+      from: msg.fromAddress as string,
+      textBody:
+        (msg.bodyText as string | null) ??
+        (msg.bodyHtml as string | null)?.replace(/<[^>]+>/g, " ") ??
+        null,
+      receivedAt: new Date(msg.receivedAt as string),
     }));
 
-  // Add optional user-supplied context as a final message
   const contextNote = parsed.data.context
     ? [
         {

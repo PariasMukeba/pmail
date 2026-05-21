@@ -8,7 +8,7 @@
 import { auth } from "@/auth";
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { prisma } from "@/lib/prisma";
+import { supabase } from "@/lib/supabase";
 import { getProviderAdapter } from "@/lib/sync";
 import { NotFoundError, ValidationError } from "@/lib/errors";
 
@@ -60,19 +60,22 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   const { accountId, to, cc, bcc, subject, attachments, inReplyToId } =
     parsed.data;
-  // body field name conflicts with outer body; use a distinct name
   const emailBody = parsed.data.body;
 
-  const account = await prisma.account.findFirst({
-    where: { id: accountId, userId: session.user.id },
-  });
+  const { data: accountRow } = await supabase
+    .from("Account")
+    .select("*")
+    .eq("id", accountId)
+    .eq("userId", session.user.id)
+    .single();
 
-  if (!account) {
+  if (!accountRow) {
     const err = new NotFoundError("Account", accountId);
     return NextResponse.json({ error: err.message }, { status: 404 });
   }
 
-  const adapter = await getProviderAdapter(account.provider);
+  const account = accountRow as Record<string, unknown>;
+  const adapter = await getProviderAdapter(account.provider as string);
 
   const attachmentBuffers = attachments?.map((a) => ({
     name: a.name,
@@ -80,7 +83,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     mimeType: a.mimeType,
   }));
 
-  const sent = await adapter.sendEmail(account.id, {
+  const sent = await adapter.sendEmail(account.id as string, {
     to,
     cc,
     bcc,
@@ -90,28 +93,32 @@ export async function POST(request: Request): Promise<NextResponse> {
     inReplyToId,
   });
 
-  // Persist the sent email to the local cache
-  await prisma.cachedEmail.create({
-    data: {
-      accountId: account.id,
-      messageId: sent.messageId,
-      threadId: sent.threadId,
-      subject,
-      fromName: account.displayName ?? account.email ?? "",
-      fromAddress: account.email ?? "",
-      toAddresses: JSON.stringify(to),
-      ccAddresses: JSON.stringify(cc ?? []),
-      preview: emailBody.slice(0, 200),
-      bodyText: emailBody,
-      date: new Date(),
-      isRead: true,
-      isStarred: false,
-      isDraft: false,
-      labels: JSON.stringify(["SENT"]),
-      hasAttachments: (attachments?.length ?? 0) > 0,
-      inReplyTo: inReplyToId,
-    },
+  await supabase.from("CachedEmail").insert({
+    id: crypto.randomUUID(),
+    accountId: account.id,
+    messageId: sent.messageId,
+    threadId: sent.threadId,
+    subject,
+    fromName: (account.displayName ?? account.email ?? "") as string,
+    fromAddress: (account.email ?? "") as string,
+    toAddresses: JSON.stringify(to),
+    ccAddresses: JSON.stringify(cc ?? []),
+    preview: emailBody.slice(0, 200),
+    bodyText: emailBody,
+    date: new Date().toISOString(),
+    receivedAt: new Date().toISOString(),
+    isRead: true,
+    isStarred: false,
+    isDraft: false,
+    labels: JSON.stringify(["SENT"]),
+    hasAttachments: (attachments?.length ?? 0) > 0,
+    inReplyTo: inReplyToId ?? null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
   });
 
-  return NextResponse.json({ messageId: sent.messageId, threadId: sent.threadId });
+  return NextResponse.json({
+    messageId: sent.messageId,
+    threadId: sent.threadId,
+  });
 }

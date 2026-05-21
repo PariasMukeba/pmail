@@ -6,7 +6,7 @@
 import { auth } from "@/auth";
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { prisma } from "@/lib/prisma";
+import { supabase } from "@/lib/supabase";
 import { ValidationError } from "@/lib/errors";
 
 const createDraftSchema = z.object({
@@ -38,12 +38,13 @@ export async function GET(_request: Request): Promise<NextResponse> {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const drafts = await prisma.draft.findMany({
-    where: { userId: session.user.id },
-    orderBy: { updatedAt: "desc" },
-  });
+  const { data: drafts } = await supabase
+    .from("Draft")
+    .select("*")
+    .eq("userId", session.user.id)
+    .order("updatedAt", { ascending: false });
 
-  return NextResponse.json({ drafts });
+  return NextResponse.json({ drafts: drafts ?? [] });
 }
 
 /**
@@ -69,16 +70,22 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   // Verify the account belongs to the user
-  const account = await prisma.account.findFirst({
-    where: { id: parsed.data.accountId, userId: session.user.id },
-  });
+  const { data: account } = await supabase
+    .from("Account")
+    .select("id")
+    .eq("id", parsed.data.accountId)
+    .eq("userId", session.user.id)
+    .single();
 
   if (!account) {
     return NextResponse.json({ error: "Account not found" }, { status: 404 });
   }
 
-  const draft = await prisma.draft.create({
-    data: {
+  const now = new Date().toISOString();
+  const { data: draft } = await supabase
+    .from("Draft")
+    .insert({
+      id: crypto.randomUUID(),
       accountId: parsed.data.accountId,
       userId: session.user.id,
       toAddresses: JSON.stringify(parsed.data.to),
@@ -86,9 +93,12 @@ export async function POST(request: Request): Promise<NextResponse> {
       bccAddresses: JSON.stringify(parsed.data.bcc),
       subject: parsed.data.subject,
       body: parsed.data.body,
-      inReplyToId: parsed.data.inReplyToId,
-    },
-  });
+      inReplyToId: parsed.data.inReplyToId ?? null,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .select("*")
+    .single();
 
   return NextResponse.json({ draft }, { status: 201 });
 }

@@ -6,7 +6,7 @@
 import { auth } from "@/auth";
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { prisma } from "@/lib/prisma";
+import { supabase } from "@/lib/supabase";
 import { ValidationError } from "@/lib/errors";
 
 const createLabelSchema = z.object({
@@ -25,12 +25,14 @@ export async function GET(_request: Request): Promise<NextResponse> {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const labels = await prisma.label.findMany({
-    where: { userId: session.user.id },
-    orderBy: [{ isSystem: "desc" }, { name: "asc" }],
-  });
+  const { data: labels } = await supabase
+    .from("Label")
+    .select("*")
+    .eq("userId", session.user.id)
+    .order("isSystem", { ascending: false })
+    .order("name", { ascending: true });
 
-  return NextResponse.json({ labels });
+  return NextResponse.json({ labels: labels ?? [] });
 }
 
 /**
@@ -57,23 +59,30 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   // If accountId is provided, verify it belongs to the user
   if (parsed.data.accountId) {
-    const account = await prisma.account.findFirst({
-      where: { id: parsed.data.accountId, userId: session.user.id },
-    });
+    const { data: account } = await supabase
+      .from("Account")
+      .select("id")
+      .eq("id", parsed.data.accountId)
+      .eq("userId", session.user.id)
+      .single();
     if (!account) {
       return NextResponse.json({ error: "Account not found" }, { status: 404 });
     }
   }
 
-  const label = await prisma.label.create({
-    data: {
+  const { data: label } = await supabase
+    .from("Label")
+    .insert({
+      id: crypto.randomUUID(),
       userId: session.user.id,
       name: parsed.data.name,
       color: parsed.data.color,
       accountId: parsed.data.accountId ?? null,
       isSystem: false,
-    },
-  });
+      createdAt: new Date().toISOString(),
+    })
+    .select("*")
+    .single();
 
   return NextResponse.json({ label }, { status: 201 });
 }

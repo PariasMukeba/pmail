@@ -12,7 +12,7 @@ import Imap from "imap";
 import { simpleParser, type ParsedMail, type AddressObject } from "mailparser";
 import nodemailer from "nodemailer";
 import { Readable } from "stream";
-import { prisma } from "@/lib/prisma";
+import { supabase } from "@/lib/supabase";
 import { decryptImapPassword } from "@/lib/skills/crypto/decrypt-imap-password";
 import { SyncError, SendError, NotFoundError } from "@/lib/errors";
 import { IMAP_CONNECTION_TIMEOUT_MS } from "@/lib/constants";
@@ -79,30 +79,35 @@ export async function verifyImapConnection(
  * @throws SyncError if IMAP credentials are incomplete.
  */
 async function getImapConnection(accountId: string): Promise<Imap> {
-  const account = await prisma.account.findUnique({ where: { id: accountId } });
-  if (!account) {
+  const { data: account } = await supabase
+    .from("Account")
+    .select("*")
+    .eq("id", accountId)
+    .single();
+  const acct = account as Record<string, unknown> | null;
+  if (!acct) {
     throw new NotFoundError("Account", accountId);
   }
   if (
-    !account.imapHost ||
-    !account.imapPort ||
-    !account.imapUser ||
-    !account.imapPasswordEncrypted
+    !acct.imapHost ||
+    !acct.imapPort ||
+    !acct.imapUser ||
+    !acct.imapPasswordEncrypted
   ) {
     throw new SyncError(accountId, "imap", "Incomplete IMAP credentials");
   }
 
   const encryptedValue = JSON.parse(
-    account.imapPasswordEncrypted,
+    acct.imapPasswordEncrypted as string,
   ) as EncryptedValue;
   const password = decryptImapPassword(encryptedValue);
 
   return new Promise((resolve, reject) => {
     const imap = new Imap({
-      user: account.imapUser as string,
+      user: acct.imapUser as string,
       password,
-      host: account.imapHost as string,
-      port: account.imapPort as number,
+      host: acct.imapHost as string,
+      port: acct.imapPort as number,
       tls: true,
       connTimeout: IMAP_CONNECTION_TIMEOUT_MS,
       authTimeout: IMAP_CONNECTION_TIMEOUT_MS,
@@ -165,8 +170,8 @@ function parsedMailToEmailData(
   const refsArray: string[] = !refsRaw
     ? []
     : Array.isArray(refsRaw)
-    ? refsRaw
-    : [refsRaw];
+      ? refsRaw
+      : [refsRaw];
 
   // Derive a threadId from In-Reply-To or the first Reference, falling back to messageId
   const threadId =
@@ -203,7 +208,11 @@ function parsedMailToEmailData(
 /**
  * Open a mailbox on an already-connected IMAP instance.
  */
-function openMailbox(imap: Imap, mailbox: string, readOnly: boolean): Promise<Imap.Box> {
+function openMailbox(
+  imap: Imap,
+  mailbox: string,
+  readOnly: boolean,
+): Promise<Imap.Box> {
   return new Promise((resolve, reject) => {
     imap.openBox(mailbox, readOnly, (err, box) => {
       if (err) reject(err);
@@ -215,7 +224,10 @@ function openMailbox(imap: Imap, mailbox: string, readOnly: boolean): Promise<Im
 /**
  * Execute an IMAP UID search and return the matching UID array.
  */
-function searchUids(imap: Imap, criteria: (string | string[])[]): Promise<string[]> {
+function searchUids(
+  imap: Imap,
+  criteria: (string | string[])[],
+): Promise<string[]> {
   return new Promise((resolve, reject) => {
     imap.search(criteria, (err, uids) => {
       if (err) reject(err);
@@ -234,7 +246,8 @@ function fetchMessages(
   bodies: string,
 ): Promise<Array<{ uid: string; parsed: ParsedMail; flags: string[] }>> {
   return new Promise((resolve, reject) => {
-    const results: Array<{ uid: string; parsed: ParsedMail; flags: string[] }> = [];
+    const results: Array<{ uid: string; parsed: ParsedMail; flags: string[] }> =
+      [];
     let fetch: Imap.ImapFetch;
 
     try {
@@ -342,10 +355,7 @@ export const imapAdapter: EmailProvider = {
    *
    * @throws SyncError on IMAP errors.
    */
-  async fetchThread(
-    accountId: string,
-    threadId: string,
-  ): Promise<EmailData[]> {
+  async fetchThread(accountId: string, threadId: string): Promise<EmailData[]> {
     const imap = await getImapConnection(accountId);
 
     try {
@@ -472,30 +482,22 @@ export const imapAdapter: EmailProvider = {
       await openMailbox(imap, "INBOX", false);
 
       await new Promise<void>((resolve, reject) => {
-        imap.copy(
-          messageIds.join(","),
-          "Archive",
-          (copyErr) => {
-            if (copyErr) {
-              // Archive folder may not exist — just mark as deleted
+        imap.copy(messageIds.join(","), "Archive", (copyErr) => {
+          if (copyErr) {
+            // Archive folder may not exist — just mark as deleted
+          }
+          imap.addFlags(messageIds.join(","), ["\\Deleted"], (flagErr) => {
+            if (flagErr) {
+              reject(new SyncError(accountId, "imap", flagErr.message));
+              return;
             }
-            imap.addFlags(
-              messageIds.join(","),
-              ["\\Deleted"],
-              (flagErr) => {
-                if (flagErr) {
-                  reject(new SyncError(accountId, "imap", flagErr.message));
-                  return;
-                }
-                imap.expunge((expungeErr) => {
-                  if (expungeErr)
-                    reject(new SyncError(accountId, "imap", expungeErr.message));
-                  else resolve();
-                });
-              },
-            );
-          },
-        );
+            imap.expunge((expungeErr) => {
+              if (expungeErr)
+                reject(new SyncError(accountId, "imap", expungeErr.message));
+              else resolve();
+            });
+          });
+        });
       });
     } catch (err) {
       if (err instanceof SyncError) throw err;
@@ -602,19 +604,21 @@ export const imapAdapter: EmailProvider = {
    * @throws NotFoundError if the account doesn't exist.
    * @throws SendError on SMTP delivery failure.
    */
-  async sendEmail(
-    accountId: string,
-    draft: DraftData,
-  ): Promise<SentResult> {
-    const account = await prisma.account.findUnique({ where: { id: accountId } });
-    if (!account) {
+  async sendEmail(accountId: string, draft: DraftData): Promise<SentResult> {
+    const { data: account } = await supabase
+      .from("Account")
+      .select("*")
+      .eq("id", accountId)
+      .single();
+    const acct = account as Record<string, unknown> | null;
+    if (!acct) {
       throw new NotFoundError("Account", accountId);
     }
     if (
-      !account.smtpHost ||
-      !account.smtpPort ||
-      !account.imapUser ||
-      !account.imapPasswordEncrypted
+      !acct.smtpHost ||
+      !acct.smtpPort ||
+      !acct.imapUser ||
+      !acct.imapPasswordEncrypted
     ) {
       throw new SendError(
         draft.to.map((t) => t.address).join(", "),
@@ -624,16 +628,16 @@ export const imapAdapter: EmailProvider = {
     }
 
     const encryptedValue = JSON.parse(
-      account.imapPasswordEncrypted,
+      acct.imapPasswordEncrypted as string,
     ) as EncryptedValue;
     const password = decryptImapPassword(encryptedValue);
 
     const transport = nodemailer.createTransport({
-      host: account.smtpHost,
-      port: account.smtpPort,
-      secure: account.smtpPort === 465,
+      host: acct.smtpHost as string,
+      port: acct.smtpPort as number,
+      secure: (acct.smtpPort as number) === 465,
       auth: {
-        user: account.imapUser,
+        user: acct.imapUser as string,
         pass: password,
       },
     });
@@ -652,7 +656,12 @@ export const imapAdapter: EmailProvider = {
     }));
 
     const mailOptions: nodemailer.SendMailOptions = {
-      from: formatAddrs([{ name: account.displayName ?? "", address: account.email ?? account.imapUser ?? "" }]),
+      from: formatAddrs([
+        {
+          name: (acct.displayName as string) ?? "",
+          address: (acct.email as string) ?? (acct.imapUser as string) ?? "",
+        },
+      ]),
       to: formatAddrs(draft.to),
       subject: draft.subject,
       html: draft.body,

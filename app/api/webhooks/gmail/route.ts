@@ -10,7 +10,7 @@
  */
 
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { supabase } from "@/lib/supabase";
 
 /** Shape of the Pub/Sub message wrapper from Google. */
 interface PubSubMessage {
@@ -38,7 +38,6 @@ export async function POST(request: Request): Promise<NextResponse> {
   try {
     pubSubMessage = (await request.json()) as PubSubMessage;
   } catch {
-    // Malformed JSON — acknowledge so Google stops retrying
     return NextResponse.json({ ok: true });
   }
 
@@ -63,31 +62,32 @@ export async function POST(request: Request): Promise<NextResponse> {
   // Fire-and-forget background sync — do not await
   void (async () => {
     try {
-      const account = await prisma.account.findFirst({
-        where: { email: emailAddress, provider: "gmail" },
-      });
+      const { data: account } = await supabase
+        .from("Account")
+        .select("id")
+        .eq("email", emailAddress)
+        .eq("provider", "google")
+        .single();
 
       if (!account) return;
 
-      // Update historyId to trigger incremental sync
+      const acct = account as Record<string, unknown>;
+
       if (notification.historyId) {
-        await prisma.syncState.upsert({
-          where: { accountId: account.id },
-          create: {
-            accountId: account.id,
+        await supabase.from("SyncState").upsert(
+          {
+            accountId: acct.id,
             historyId: String(notification.historyId),
+            updatedAt: new Date().toISOString(),
           },
-          update: {
-            historyId: String(notification.historyId),
-          },
-        });
+          { onConflict: "accountId" },
+        );
       }
 
-      // Trigger sync via internal API call
-      await fetch(
-        `${process.env.NEXTAUTH_URL}/api/sync/${account.id}`,
-        { method: "POST", headers: { "x-internal-secret": process.env.INTERNAL_API_SECRET ?? "" } },
-      );
+      await fetch(`${process.env.NEXTAUTH_URL}/api/sync/${acct.id}`, {
+        method: "POST",
+        headers: { "x-internal-secret": process.env.INTERNAL_API_SECRET ?? "" },
+      });
     } catch {
       // Swallow — webhook handler must not throw
     }

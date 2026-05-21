@@ -14,7 +14,7 @@
 
 import { auth } from "@/auth";
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { supabase } from "@/lib/supabase";
 import { dbEmailToApiEmail } from "@/lib/inbox";
 import { SEARCH_MAX_RESULTS } from "@/lib/constants";
 
@@ -22,8 +22,7 @@ const PAGE_SIZE = SEARCH_MAX_RESULTS;
 
 /**
  * GET /api/search
- * Searches email subject, sender name, sender address, and preview text
- * using Prisma `contains` queries.
+ * Searches email subject, sender name, sender address, and preview text.
  */
 export async function GET(request: Request): Promise<NextResponse> {
   const session = await auth();
@@ -52,63 +51,58 @@ export async function GET(request: Request): Promise<NextResponse> {
     isReadRaw === "true" ? true : isReadRaw === "false" ? false : undefined;
   const cursor = searchParams.get("cursor") ?? undefined;
 
-  const dateFrom = dateFromRaw ? new Date(dateFromRaw) : undefined;
-  const dateTo = dateToRaw ? new Date(dateToRaw) : undefined;
-
   // Resolve account IDs to enforce userId ownership
   let accountIds: string[];
   if (accountId) {
-    const account = await prisma.account.findFirst({
-      where: { id: accountId, userId: session.user.id },
-      select: { id: true },
-    });
-    if (!account) {
-      return NextResponse.json({ emails: [] });
-    }
-    accountIds = [account.id];
+    const { data: acct } = await supabase
+      .from("Account")
+      .select("id")
+      .eq("id", accountId)
+      .eq("userId", session.user.id)
+      .single();
+    if (!acct) return NextResponse.json({ emails: [] });
+    accountIds = [(acct as Record<string, unknown>).id as string];
   } else {
-    const accounts = await prisma.account.findMany({
-      where: { userId: session.user.id },
-      select: { id: true },
-    });
-    accountIds = accounts.map((a) => a.id);
+    const { data: accounts } = await supabase
+      .from("Account")
+      .select("id")
+      .eq("userId", session.user.id);
+    accountIds = (accounts ?? []).map(
+      (a: Record<string, unknown>) => a.id as string,
+    );
   }
 
-  if (accountIds.length === 0) {
-    return NextResponse.json({ emails: [] });
-  }
+  if (accountIds.length === 0) return NextResponse.json({ emails: [] });
 
-  const rows = await prisma.cachedEmail.findMany({
-    where: {
-      accountId: { in: accountIds },
-      isDraft: false,
-      ...(isRead !== undefined && { isRead }),
-      ...(hasAttachments !== undefined && { hasAttachments }),
-      ...(label && { labels: { contains: label } }),
-      ...(dateFrom && { date: { gte: dateFrom } }),
-      ...(dateTo && {
-        date: {
-          ...(dateFrom ? { gte: dateFrom } : {}),
-          lte: dateTo,
-        },
-      }),
-      OR: [
-        { subject: { contains: q } },
-        { fromName: { contains: q } },
-        { fromAddress: { contains: q } },
-        { preview: { contains: q } },
-      ],
-    },
-    orderBy: { date: "desc" },
-    take: PAGE_SIZE + 1,
-    ...(cursor && { cursor: { id: cursor }, skip: 1 }),
-  });
+  const s = q.replace(/[%_]/g, "\\$&");
 
-  const hasMore = rows.length > PAGE_SIZE;
-  const slice = hasMore ? rows.slice(0, PAGE_SIZE) : rows;
+  let query = supabase
+    .from("CachedEmail")
+    .select("*")
+    .in("accountId", accountIds)
+    .eq("isDraft", false)
+    .or(
+      `subject.ilike.%${s}%,fromName.ilike.%${s}%,fromAddress.ilike.%${s}%,preview.ilike.%${s}%`,
+    )
+    .order("date", { ascending: false })
+    .limit(PAGE_SIZE + 1);
+
+  if (cursor) query = query.lt("date", cursor);
+  if (isRead !== undefined) query = query.eq("isRead", isRead);
+  if (hasAttachments !== undefined)
+    query = query.eq("hasAttachments", hasAttachments);
+  if (label) query = query.like("labels", `%"${label}"%`);
+  if (dateFromRaw) query = query.gte("date", dateFromRaw);
+  if (dateToRaw) query = query.lte("date", dateToRaw);
+
+  const { data: rows } = await query;
+  const items = (rows ?? []) as Record<string, unknown>[];
+
+  const hasMore = items.length > PAGE_SIZE;
+  const slice = hasMore ? items.slice(0, PAGE_SIZE) : items;
 
   return NextResponse.json({
-    emails: slice.map(dbEmailToApiEmail),
-    nextCursor: hasMore ? slice[slice.length - 1]?.id : undefined,
+    emails: slice.map((r) => dbEmailToApiEmail(r)),
+    nextCursor: hasMore ? slice[slice.length - 1]?.date : undefined,
   });
 }

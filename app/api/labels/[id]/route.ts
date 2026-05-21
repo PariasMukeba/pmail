@@ -6,7 +6,7 @@
 import { auth } from "@/auth";
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { prisma } from "@/lib/prisma";
+import { supabase } from "@/lib/supabase";
 import { ValidationError, NotFoundError } from "@/lib/errors";
 
 const patchLabelSchema = z.object({
@@ -47,29 +47,36 @@ export async function PATCH(
     );
   }
 
-  const existing = await prisma.label.findFirst({
-    where: { id: params.id, userId: session.user.id },
-  });
+  const { data: existing } = await supabase
+    .from("Label")
+    .select("*")
+    .eq("id", params.id)
+    .eq("userId", session.user.id)
+    .single();
 
   if (!existing) {
     const err = new NotFoundError("Label", params.id);
     return NextResponse.json({ error: err.message }, { status: 404 });
   }
 
-  if (existing.isSystem) {
+  const row = existing as Record<string, unknown>;
+  if (row.isSystem) {
     return NextResponse.json(
       { error: "System labels cannot be modified" },
       { status: 403 },
     );
   }
 
-  const label = await prisma.label.update({
-    where: { id: params.id },
-    data: {
-      ...(parsed.data.name !== undefined && { name: parsed.data.name }),
-      ...(parsed.data.color !== undefined && { color: parsed.data.color }),
-    },
-  });
+  const updateData: Record<string, unknown> = {};
+  if (parsed.data.name !== undefined) updateData.name = parsed.data.name;
+  if (parsed.data.color !== undefined) updateData.color = parsed.data.color;
+
+  const { data: label } = await supabase
+    .from("Label")
+    .update(updateData)
+    .eq("id", params.id)
+    .select("*")
+    .single();
 
   return NextResponse.json({ label });
 }
@@ -88,23 +95,27 @@ export async function DELETE(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const existing = await prisma.label.findFirst({
-    where: { id: params.id, userId: session.user.id },
-  });
+  const { data: existing } = await supabase
+    .from("Label")
+    .select("id,isSystem")
+    .eq("id", params.id)
+    .eq("userId", session.user.id)
+    .single();
 
   if (!existing) {
     const err = new NotFoundError("Label", params.id);
     return NextResponse.json({ error: err.message }, { status: 404 });
   }
 
-  if (existing.isSystem) {
+  const row = existing as Record<string, unknown>;
+  if (row.isSystem) {
     return NextResponse.json(
       { error: "System labels cannot be deleted" },
       { status: 403 },
     );
   }
 
-  await prisma.label.delete({ where: { id: params.id } });
+  await supabase.from("Label").delete().eq("id", params.id);
 
   return new NextResponse(null, { status: 204 });
 }

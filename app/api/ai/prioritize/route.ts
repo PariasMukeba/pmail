@@ -11,7 +11,7 @@
 import { auth } from "@/auth";
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { prisma } from "@/lib/prisma";
+import { supabase } from "@/lib/supabase";
 import { emailAI } from "@/lib/ai/email-ai";
 import { ValidationError } from "@/lib/errors";
 
@@ -64,29 +64,42 @@ export async function POST(request: Request): Promise<NextResponse> {
     );
   }
 
-  const emails = await prisma.cachedEmail.findMany({
-    where: {
-      id: { in: parsed.data.emailIds },
-      account: { userId: session.user.id },
-    },
-    take: MAX_EMAILS,
-  });
+  // Verify ownership
+  const { data: userAccounts } = await supabase
+    .from("Account")
+    .select("id")
+    .eq("userId", session.user.id);
+  const accountIds = (userAccounts ?? []).map(
+    (a: Record<string, unknown>) => a.id as string,
+  );
+
+  const { data: emailRows } = await supabase
+    .from("CachedEmail")
+    .select("*")
+    .in("id", parsed.data.emailIds)
+    .in("accountId", accountIds)
+    .limit(MAX_EMAILS);
+
+  const emails = (emailRows ?? []) as Record<string, unknown>[];
 
   const tasks = emails.map((email) => async () => {
     const priority = await emailAI.prioritizeEmail({
-      subject: email.subject,
-      from: { name: email.fromName, address: email.fromAddress },
-      textBody: email.bodyText,
-      body: email.bodyHtml,
-      receivedAt: email.receivedAt,
+      subject: email.subject as string,
+      from: {
+        name: email.fromName as string,
+        address: email.fromAddress as string,
+      },
+      textBody: email.bodyText as string | null | undefined,
+      body: email.bodyHtml as string | null | undefined,
+      receivedAt: new Date(email.receivedAt as string),
     });
 
-    await prisma.cachedEmail.update({
-      where: { id: email.id },
-      data: { aiPriority: priority },
-    });
+    await supabase
+      .from("CachedEmail")
+      .update({ aiPriority: priority, updatedAt: new Date().toISOString() })
+      .eq("id", email.id as string);
 
-    return { id: email.id, priority };
+    return { id: email.id as string, priority };
   });
 
   const results = await withConcurrencyLimit(tasks, CONCURRENCY_LIMIT);

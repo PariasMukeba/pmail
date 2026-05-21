@@ -1,14 +1,37 @@
 /**
  * Inbox query utilities — shared between API routes that list emails.
  *
- * `queryInbox` translates URL query params into a Prisma query and returns a
+ * `queryInbox` translates URL query params into a Supabase query and returns a
  * paginated slice of `CachedEmail` rows.  `dbEmailToApiEmail` converts a
- * raw Prisma row into the public `Email` type consumed by the UI.
+ * raw DB row into the public `Email` type consumed by the UI.
  */
 
-import { prisma } from "@/lib/prisma";
+import { supabase } from "@/lib/supabase";
 import type { Email, EmailAddress } from "@/lib/types";
-import type { CachedEmail } from "@prisma/client";
+
+interface DbCachedEmail {
+  id: string;
+  threadId: string;
+  accountId: string;
+  messageId: string;
+  subject: string;
+  fromName: string;
+  fromAddress: string;
+  toAddresses: string;
+  ccAddresses: string;
+  preview: string;
+  bodyText: string | null;
+  bodyHtml: string | null;
+  date: string;
+  receivedAt: string;
+  isRead: boolean;
+  isStarred: boolean;
+  isDraft: boolean;
+  labels: string;
+  hasAttachments: boolean;
+  aiPriority: string;
+  aiSummary: string | null;
+}
 
 /** Parameters accepted by `queryInbox`. */
 export interface InboxQuery {
@@ -16,7 +39,7 @@ export interface InboxQuery {
   accountId?: string;
   /** Filter by label name. */
   label?: string;
-  /** Opaque pagination cursor (the last email's `id`). */
+  /** Opaque pagination cursor (ISO date string of the last email). */
   cursor?: string;
   /** Maximum number of emails to return. Capped at 100. */
   limit?: number;
@@ -47,78 +70,62 @@ const MAX_PAGE_SIZE = 100;
 export async function queryInbox(query: InboxQuery): Promise<InboxResult> {
   const take = Math.min(query.limit ?? 50, MAX_PAGE_SIZE);
 
-  // Resolve accountId filter — must belong to userId
-  let accountIdFilter: string | undefined = query.accountId;
-  if (!accountIdFilter) {
-    const accounts = await prisma.account.findMany({
-      where: { userId: query.userId },
-      select: { id: true },
-    });
-    const ids = accounts.map((a) => a.id);
-    if (ids.length === 0) {
-      return { emails: [] };
-    }
-    // We'll use an array filter below
-    const rows = await prisma.cachedEmail.findMany({
-      where: {
-        accountId: { in: ids },
-        ...(query.unread !== undefined && { isRead: !query.unread }),
-        ...(query.starred !== undefined && { isStarred: query.starred }),
-        ...(query.hasAttachments !== undefined && {
-          hasAttachments: query.hasAttachments,
-        }),
-        ...(query.label && {
-          labels: { contains: query.label },
-        }),
-        isDraft: false,
-      },
-      orderBy: { date: "desc" },
-      take: take + 1,
-      ...(query.cursor && { cursor: { id: query.cursor }, skip: 1 }),
-    });
-
-    const hasMore = rows.length > take;
-    const slice = hasMore ? rows.slice(0, take) : rows;
-    return {
-      emails: slice.map(dbEmailToApiEmail),
-      nextCursor: hasMore ? slice[slice.length - 1]?.id : undefined,
-    };
+  // Resolve account IDs for this user
+  let accountIds: string[];
+  if (query.accountId) {
+    const { data: acct } = await supabase
+      .from("Account")
+      .select("id")
+      .eq("id", query.accountId)
+      .eq("userId", query.userId)
+      .single();
+    if (!acct) return { emails: [] };
+    accountIds = [(acct as Record<string, unknown>).id as string];
+  } else {
+    const { data: accounts } = await supabase
+      .from("Account")
+      .select("id")
+      .eq("userId", query.userId);
+    accountIds = (accounts ?? []).map(
+      (a: Record<string, unknown>) => a.id as string,
+    );
   }
 
-  const rows = await prisma.cachedEmail.findMany({
-    where: {
-      accountId: accountIdFilter,
-      account: { userId: query.userId },
-      ...(query.unread !== undefined && { isRead: !query.unread }),
-      ...(query.starred !== undefined && { isStarred: query.starred }),
-      ...(query.hasAttachments !== undefined && {
-        hasAttachments: query.hasAttachments,
-      }),
-      ...(query.label && {
-        labels: { contains: query.label },
-      }),
-      isDraft: false,
-    },
-    orderBy: { date: "desc" },
-    take: take + 1,
-    ...(query.cursor && { cursor: { id: query.cursor }, skip: 1 }),
-  });
+  if (accountIds.length === 0) return { emails: [] };
 
-  const hasMore = rows.length > take;
-  const slice = hasMore ? rows.slice(0, take) : rows;
+  let q = supabase
+    .from("CachedEmail")
+    .select("*")
+    .in("accountId", accountIds)
+    .eq("isDraft", false)
+    .order("date", { ascending: false })
+    .limit(take + 1);
+
+  if (query.cursor) q = q.lt("date", query.cursor);
+  if (query.unread !== undefined) q = q.eq("isRead", !query.unread);
+  if (query.starred !== undefined) q = q.eq("isStarred", query.starred);
+  if (query.hasAttachments !== undefined)
+    q = q.eq("hasAttachments", query.hasAttachments);
+  if (query.label) q = q.like("labels", `%"${query.label}"%`);
+
+  const { data: rows } = await q;
+  const items = (rows ?? []) as DbCachedEmail[];
+
+  const hasMore = items.length > take;
+  const slice = hasMore ? items.slice(0, take) : items;
   return {
     emails: slice.map(dbEmailToApiEmail),
-    nextCursor: hasMore ? slice[slice.length - 1]?.id : undefined,
+    nextCursor: hasMore ? slice[slice.length - 1]?.date : undefined,
   };
 }
 
 /**
- * Converts a `CachedEmail` Prisma row to the public `Email` API type.
+ * Converts a `CachedEmail` DB row to the public `Email` API type.
  *
  * JSON string fields (`toAddresses`, `ccAddresses`, `labels`) are parsed
  * with a safe fallback to an empty array.
  */
-export function dbEmailToApiEmail(row: CachedEmail): Email {
+export function dbEmailToApiEmail(row: DbCachedEmail): Email {
   function safeParseArray<T>(json: string): T[] {
     try {
       const parsed: unknown = JSON.parse(json);
@@ -140,7 +147,7 @@ export function dbEmailToApiEmail(row: CachedEmail): Email {
     subject: row.subject,
     preview: row.preview,
     body: row.bodyHtml ?? row.bodyText ?? "",
-    date: row.date,
+    date: new Date(row.date),
     isRead: row.isRead,
     isStarred: row.isStarred,
     labels: safeParseArray<string>(row.labels),

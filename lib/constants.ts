@@ -58,6 +58,14 @@ export const PUSH_NOTIFICATION_QUIET_HOURS_START = 22; // 10 PM
 /** Hour (0–23, user's local time) at which quiet hours end. */
 export const PUSH_NOTIFICATION_QUIET_HOURS_END = 8; // 8 AM
 
+// ─── Inbox pagination ─────────────────────────────────────────────────────────
+
+/** Number of emails loaded on initial inbox open. */
+export const INBOX_INITIAL_LIMIT = 25;
+
+/** Number of additional emails loaded each time the user scrolls to the bottom. */
+export const INBOX_LOAD_MORE_SIZE = 5;
+
 // ─── Search ───────────────────────────────────────────────────────────────────
 
 /** Debounce delay before the search SWR key updates and a request fires. */
