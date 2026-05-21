@@ -5,7 +5,7 @@
 
 ## Problem
 Users accumulate thousands of emails across multiple accounts and can't find
-specific messages without remembering which folder or account they're in. Aire
+specific messages without remembering which folder or account they're in. Pmail
 needs fast, cross-account search that works on real content, not just metadata.
 
 ## Success criteria

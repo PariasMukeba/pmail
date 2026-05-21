@@ -7,7 +7,7 @@
 
 ## Guiding principle
 
-AI in Aire is a layer on top of email, not the foundation of it. Every AI feature
+AI in Pmail is a layer on top of email, not the foundation of it. Every AI feature
 must degrade gracefully — the inbox must be fully usable with AI calls turned off
 or failing. AI results are always advisory; users take the final action.
 

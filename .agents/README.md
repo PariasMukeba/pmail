@@ -1,6 +1,6 @@
-# Aire Agent OS
+# Pmail Agent OS
 
-This directory contains instruction files for Aire's specialised AI agents.
+This directory contains instruction files for Pmail's specialised AI agents.
 Each file is a system prompt — loaded by `scripts/agent.ts` and prepended with
 `CLAUDE.md` so every agent always knows the project rules.
 

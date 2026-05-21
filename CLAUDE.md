@@ -1,8 +1,8 @@
-# CLAUDE.md — Aire Email Client
+# CLAUDE.md — Pmail Email Client
 
 ## Project identity
 
-Aire is an AI-first universal email PWA. Stack: Next.js 14 App Router, TypeScript,
+Pmail is an AI-first universal email PWA. Stack: Next.js 14 App Router, TypeScript,
 Tailwind, Prisma/SQLite (dev) / PostgreSQL (prod), NextAuth v5, Anthropic Claude API,
 Zustand, SWR.
 

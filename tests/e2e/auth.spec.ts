@@ -17,7 +17,7 @@ import { test, expect } from "@playwright/test";
 test.describe("Sign-in page", () => {
   test("shows sign-in page at /auth/signin", async ({ page }) => {
     await page.goto("/auth/signin");
-    await expect(page).toHaveTitle(/Aire|Sign in/i);
+    await expect(page).toHaveTitle(/Pmail|Sign in/i);
   });
 
   test("shows Gmail sign-in button", async ({ page }) => {

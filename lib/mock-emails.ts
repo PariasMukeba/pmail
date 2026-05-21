@@ -128,7 +128,7 @@ export const MOCK_EMAILS: Email[] = [
     accountId: "acc_gmail_1",
     from: { name: "Mia Johansson", address: "mia.j@designstudio.io" },
     to: [{ name: "Alex Morgan", address: "alex.morgan@gmail.com" }],
-    subject: "Final brand assets for Aire — download link inside",
+    subject: "Final brand assets for Pmail — download link inside",
     preview:
       "Hey! The final logo files, icon set, and colour palette are ready. Download link valid for 7 days.",
     body: `<p>Hey Alex!</p>
@@ -150,7 +150,7 @@ export const MOCK_EMAILS: Email[] = [
     hasAttachments: false,
     aiPriority: "normal",
     aiSummary:
-      "Mia sent the final Aire brand assets (logos, icons, colour palette, typography). Download link expires in 7 days.",
+      "Mia sent the final Pmail brand assets (logos, icons, colour palette, typography). Download link expires in 7 days.",
     isDraft: false,
   },
 
@@ -277,11 +277,11 @@ After the delta sync introduced in v0.14, approximately 8% of emails fetched fro
       { name: "Alex Morgan", address: "alex.morgan@contoso.com" },
       { name: "Sarah Chen", address: "sarah.chen@acmecorp.com" },
     ],
-    subject: "Security review findings — Aire v0.14",
+    subject: "Security review findings — Pmail v0.14",
     preview:
       "Hi team, attaching the security review report for v0.14. Two medium findings need addressing before GA.",
     body: `<p>Hi team,</p>
-<p>Please find attached the security review report for Aire v0.14. Overall the posture is good — no critical findings.</p>
+<p>Please find attached the security review report for Pmail v0.14. Overall the posture is good — no critical findings.</p>
 <p><strong>Medium findings (must fix before GA):</strong></p>
 <ol>
   <li><strong>M-01:</strong> OAuth refresh tokens stored in localStorage on the web client. Should move to httpOnly cookies.</li>
@@ -420,9 +420,9 @@ After the delta sync introduced in v0.14, approximately 8% of emails fetched fro
     to: [{ name: "Alex Morgan", address: "alex.morgan@gmail.com" }],
     subject: "Intro: Alex <> OpenAI Partnerships",
     preview:
-      "Hi Alex, Jake here from OpenAI partnerships. Loved the Aire demo — would love to explore an integration partnership.",
+      "Hi Alex, Jake here from OpenAI partnerships. Loved the Pmail demo — would love to explore an integration partnership.",
     body: `<p>Hi Alex,</p>
-<p>I'm Jake, Head of Developer Partnerships at OpenAI. I came across the Aire demo at last week's developer event and was genuinely impressed.</p>
+<p>I'm Jake, Head of Developer Partnerships at OpenAI. I came across the Pmail demo at last week's developer event and was genuinely impressed.</p>
 <p>I'd love to explore whether there's a natural partnership angle — particularly around integrating OpenAI models as an option alongside your existing AI layer.</p>
 <p>Would you be open to a 30-minute call next week? I'm flexible on timing.</p>
 <p>Looking forward to connecting,<br/>Jake Rivera<br/>Head of Developer Partnerships, OpenAI</p>`,
@@ -433,7 +433,7 @@ After the delta sync introduced in v0.14, approximately 8% of emails fetched fro
     hasAttachments: false,
     aiPriority: "high",
     aiSummary:
-      "Jake from OpenAI partnerships wants a 30-min call to explore an integration partnership with Aire. Flexible on timing next week.",
+      "Jake from OpenAI partnerships wants a 30-min call to explore an integration partnership with Pmail. Flexible on timing next week.",
     isDraft: false,
   },
 
@@ -482,11 +482,11 @@ After the delta sync introduced in v0.14, approximately 8% of emails fetched fro
     accountId: "acc_gmail_1",
     from: { name: "Figma", address: "no-reply@figma.com" },
     to: [{ name: "Alex Morgan", address: "alex.morgan@gmail.com" }],
-    subject: "Mia Johansson shared 'Aire Design System v2' with you",
+    subject: "Mia Johansson shared 'Pmail Design System v2' with you",
     preview:
-      "Mia Johansson has shared a Figma file with you: Aire Design System v2.",
+      "Mia Johansson has shared a Figma file with you: Pmail Design System v2.",
     body: `<p><strong>Mia Johansson</strong> has shared a file with you.</p>
-<p><strong>Aire Design System v2</strong></p>
+<p><strong>Pmail Design System v2</strong></p>
 <p>
   <a href="#">Open in Figma</a>
 </p>

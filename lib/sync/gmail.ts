@@ -1,5 +1,5 @@
 /**
- * Gmail REST API adapter for Aire email sync.
+ * Gmail REST API adapter for Pmail email sync.
  *
  * Uses raw `fetch` against the Gmail v1 REST API — no googleapis SDK.
  * OAuth tokens are stored in the Prisma `Account` table and refreshed
@@ -228,7 +228,7 @@ function extractBodies(
 }
 
 /**
- * Map provider-specific Gmail label IDs to normalised label names that Aire
+ * Map provider-specific Gmail label IDs to normalised label names that Pmail
  * stores in the `labels` JSON column.
  */
 function mapGmailLabels(labelIds: string[]): string[] {

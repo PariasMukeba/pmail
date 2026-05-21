@@ -13,7 +13,7 @@ export type StandardLabel =
   | "unread"
   | string; // user-defined labels pass through
 
-/** Gmail system label ID → Aire standard label name. */
+/** Gmail system label ID → Pmail standard label name. */
 const SYSTEM_LABEL_MAP: Record<string, StandardLabel> = {
   INBOX: "inbox",
   SENT: "sent",
@@ -29,7 +29,7 @@ const SYSTEM_LABEL_MAP: Record<string, StandardLabel> = {
 };
 
 /**
- * Map an array of Gmail label IDs to Aire's standard label names.
+ * Map an array of Gmail label IDs to Pmail's standard label names.
  *
  * System labels (INBOX, SENT, DRAFT, etc.) are translated via the mapping
  * table. User-defined labels are lowercased and returned as-is.

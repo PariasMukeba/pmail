@@ -149,7 +149,7 @@ export function makeRawEmail(overrides: {
 }
 
 // ─── Email (API / UI model) ────────────────────────────────────────────────────
-// The shaped returned by the Aire API and consumed by the UI.
+// The shaped returned by the Pmail API and consumed by the UI.
 
 export interface EmailAddress {
   name: string;

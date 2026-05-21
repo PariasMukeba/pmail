@@ -1,7 +1,7 @@
 # lib/skills/
 
 Reusable, well-tested functions that any agent or application code can call.
-Think of this as Aire's standard library — small, focused, independently testable.
+Think of this as Pmail's standard library — small, focused, independently testable.
 
 ---
 

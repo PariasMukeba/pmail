@@ -5,9 +5,9 @@
 
 ---
 
-## What Aire is
+## What Pmail is
 
-Aire is a server-side-rendered, AI-first email PWA. It connects to any number of
+Pmail is a server-side-rendered, AI-first email PWA. It connects to any number of
 email accounts (Gmail, Outlook, IMAP), presents a unified inbox, and uses Claude
 to summarise, categorise, draft, and prioritise email.
 

@@ -5,7 +5,7 @@
 
 ## Problem
 Users with multiple email accounts miss messages because they must check each
-account separately. Aire must present all accounts as a single, fast,
+account separately. Pmail must present all accounts as a single, fast,
 reverse-chronological thread list so nothing slips through.
 
 ## Success criteria

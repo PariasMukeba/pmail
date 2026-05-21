@@ -1,5 +1,5 @@
 /**
- * IMAP/SMTP adapter for Aire email sync.
+ * IMAP/SMTP adapter for Pmail email sync.
  *
  * Uses the `imap` npm package for reading and the `nodemailer` package for
  * sending. IMAP passwords are stored encrypted in the database and decrypted

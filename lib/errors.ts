@@ -1,9 +1,9 @@
 /**
- * Base error class for all Aire application errors.
+ * Base error class for all Pmail application errors.
  * Carry a machine-readable `code`, structured `context`, and a creation timestamp
  * so that error handlers can log identifiers without logging user content.
  */
-export class AireError extends Error {
+export class PmailError extends Error {
   readonly code: string;
   readonly context: Record<string, unknown>;
   readonly timestamp: Date;
@@ -26,7 +26,7 @@ export class AireError extends Error {
 }
 
 /** Thrown when a provider sync job fails (network error, quota, bad response). */
-export class SyncError extends AireError {
+export class SyncError extends PmailError {
   constructor(
     readonly accountId: string,
     readonly provider: string,
@@ -37,7 +37,7 @@ export class SyncError extends AireError {
 }
 
 /** Thrown when OAuth token exchange, refresh, or validation fails. */
-export class AuthError extends AireError {
+export class AuthError extends PmailError {
   constructor(
     readonly provider: string,
     readonly reason: string,
@@ -54,7 +54,7 @@ export class AuthError extends AireError {
  * `retryable` signals whether callers should attempt a retry or surface a
  * permanent error to the user.
  */
-export class AIError extends AireError {
+export class AIError extends PmailError {
   constructor(
     readonly operation: string,
     readonly retryable: boolean,
@@ -65,7 +65,7 @@ export class AIError extends AireError {
 }
 
 /** Thrown when dispatching an email through a provider API fails. */
-export class SendError extends AireError {
+export class SendError extends PmailError {
   constructor(
     readonly to: string,
     readonly subject: string,
@@ -82,7 +82,7 @@ export class SendError extends AireError {
 }
 
 /** Thrown when a requested resource does not exist in the database. */
-export class NotFoundError extends AireError {
+export class NotFoundError extends PmailError {
   constructor(
     readonly resource: string,
     readonly id: string,
@@ -92,7 +92,7 @@ export class NotFoundError extends AireError {
 }
 
 /** Thrown when a request body fails schema validation. */
-export class ValidationError extends AireError {
+export class ValidationError extends PmailError {
   constructor(
     message: string,
     context: Record<string, unknown> = {},
@@ -105,7 +105,7 @@ export class ValidationError extends AireError {
  * Generic application error for cases not covered by the typed subclasses.
  * Use sparingly — prefer a specific typed subclass when possible.
  */
-export class AppError extends AireError {
+export class AppError extends PmailError {
   constructor(
     code: string,
     message: string,

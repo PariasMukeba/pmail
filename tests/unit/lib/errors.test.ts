@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  AireError,
+  PmailError,
   SyncError,
   AuthError,
   AIError,
@@ -8,9 +8,9 @@ import {
   NotFoundError,
 } from "@/lib/errors";
 
-describe("AireError", () => {
+describe("PmailError", () => {
   it("sets code, message, context, and timestamp", () => {
-    const err = new AireError("MY_CODE", "Something went wrong", { key: "val" });
+    const err = new PmailError("MY_CODE", "Something went wrong", { key: "val" });
     expect(err.code).toBe("MY_CODE");
     expect(err.message).toBe("Something went wrong");
     expect(err.context).toEqual({ key: "val" });
@@ -18,15 +18,15 @@ describe("AireError", () => {
   });
 
   it("is instanceof Error", () => {
-    expect(new AireError("X", "msg")).toBeInstanceOf(Error);
+    expect(new PmailError("X", "msg")).toBeInstanceOf(Error);
   });
 
-  it("sets name to constructor name (AireError)", () => {
-    expect(new AireError("X", "msg").name).toBe("AireError");
+  it("sets name to constructor name (PmailError)", () => {
+    expect(new PmailError("X", "msg").name).toBe("PmailError");
   });
 
   it("defaults context to empty object", () => {
-    const err = new AireError("X", "msg");
+    const err = new PmailError("X", "msg");
     expect(err.context).toEqual({});
   });
 });
@@ -40,9 +40,9 @@ describe("SyncError", () => {
     expect(err.context).toMatchObject({ accountId: "acc-123", provider: "GMAIL" });
   });
 
-  it("is instanceof AireError and Error", () => {
+  it("is instanceof PmailError and Error", () => {
     const err = new SyncError("a", "b", "msg");
-    expect(err).toBeInstanceOf(AireError);
+    expect(err).toBeInstanceOf(PmailError);
     expect(err).toBeInstanceOf(Error);
   });
 });

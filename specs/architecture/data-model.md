@@ -66,7 +66,7 @@ model Account {
   id_token          String?
   session_state     String?
 
-  // Custom Aire fields
+  // Custom Pmail fields
   imapHost              String?
   imapPort              Int?
   smtpHost              String?

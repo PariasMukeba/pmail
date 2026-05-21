@@ -20,7 +20,7 @@ export default function SignaturesPage() {
 
   const save = () => {
     const html = editor?.getHTML() ?? "";
-    localStorage.setItem("aire-signature", html);
+    localStorage.setItem("pmail-signature", html);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };

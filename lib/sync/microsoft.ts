@@ -1,5 +1,5 @@
 /**
- * Microsoft Graph API adapter for Aire email sync.
+ * Microsoft Graph API adapter for Pmail email sync.
  *
  * Uses raw `fetch` against the Microsoft Graph v1.0 REST API.
  * Supports delta sync via `@odata.deltaLink` for incremental updates.

@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 /**
- * Aire Agent Runner
+ * Pmail Agent Runner
  *
  * Reads a .agents/<name>.md file as the system prompt, prepends CLAUDE.md,
  * and calls Claude with streaming output.
@@ -214,7 +214,7 @@ const agentName = argv[0];
 
 if (!agentName || agentName === "--help" || agentName === "-h") {
   console.log(`
-Aire Agent Runner
+Pmail Agent Runner
 
 Usage:
   tsx scripts/agent.ts <agent-name> [message or spec-path...]

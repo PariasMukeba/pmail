@@ -1,6 +1,6 @@
 # specs/
 
-Every feature and architectural decision in Aire is written down before code is
+Every feature and architectural decision in Pmail is written down before code is
 written. This directory is the single source of truth for what we are building,
 why we built it that way, and what "done" looks like.
 

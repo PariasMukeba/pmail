@@ -4,7 +4,7 @@ import type { EmailProviderPlugin, AIFeaturePlugin } from "./types";
 /**
  * Plugin manifest.
  *
- * Adding a plugin to Aire requires two things:
+ * Adding a plugin to Pmail requires two things:
  * 1. Create the plugin file in `providers/` or `ai-features/`
  * 2. Add its name here
  *
